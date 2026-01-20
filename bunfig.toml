@@ -1,0 +1,28 @@
+[install]
+# Enable caching for faster installs
+cache = true
+
+# Install optional dependencies
+optional = true
+
+# Use exact versions from lockfile
+exact = true
+
+[test]
+# Enable test coverage reporting
+coverage = true
+
+# Set minimum coverage threshold (90%)
+coverageThreshold = 90
+
+# Exclude test files from coverage
+coverageSkipTestFiles = true
+
+# Preload setup file before running tests
+preload = ["./tests/setup.ts"]
+
+# Show verbose test output
+verbose = false
+
+# Timeout for tests (in milliseconds)
+timeout = 5000

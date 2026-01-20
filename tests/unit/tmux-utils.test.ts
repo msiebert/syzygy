@@ -1,0 +1,421 @@
+/**
+ * Unit tests for tmux-utils
+ */
+
+import { describe, it, expect, spyOn } from 'bun:test';
+import * as tmuxUtils from '../../src/utils/tmux-utils.js';
+
+describe('tmux-utils', () => {
+  describe('createSession', () => {
+    it('should create a new tmux session successfully', async () => {
+      // Mock Bun.spawn to simulate tmux command responses
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      // Mock new-session command (returns nothing on success)
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(''));
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      // Mock list-sessions command
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode('test-session:@1:@1.1:12345')
+            );
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      const session = await tmuxUtils.createSession('test-session');
+
+      expect(session.name).toBe('test-session');
+      expect(session.agentId).toBe('test-session');
+      expect(session.windowId).toBe('@1');
+      expect(session.paneId).toBe('@1.1');
+      expect(session.pid).toBe(12345);
+      expect(session.createdAt).toBeInstanceOf(Date);
+
+      mockSpawn.mockRestore();
+    });
+
+    it('should create session with custom command', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode(''));
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode('test:@1:@1.1:12345')
+            );
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      await tmuxUtils.createSession('test', 'bash');
+
+      expect(mockSpawn).toHaveBeenCalledTimes(2);
+      mockSpawn.mockRestore();
+    });
+
+    it('should throw TmuxError on failure', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('session already exists'));
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(1),
+      } as any));
+
+      await expect(tmuxUtils.createSession('test')).rejects.toThrow(tmuxUtils.TmuxError);
+
+      mockSpawn.mockRestore();
+    });
+  });
+
+  describe('destroySession', () => {
+    it('should destroy a session successfully', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      await tmuxUtils.destroySession('test-session');
+
+      expect(mockSpawn).toHaveBeenCalledWith(['tmux', 'kill-session', '-t', 'test-session'], expect.any(Object));
+      mockSpawn.mockRestore();
+    });
+
+    it('should not throw if session does not exist', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("can't find session"));
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(1),
+      } as any));
+
+      // Should not throw
+      await tmuxUtils.destroySession('nonexistent');
+
+      mockSpawn.mockRestore();
+    });
+  });
+
+  describe('sendKeys', () => {
+    it('should send keys to a session', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      await tmuxUtils.sendKeys('test-session', 'echo hello');
+
+      expect(mockSpawn).toHaveBeenCalledWith(
+        ['tmux', 'send-keys', '-t', 'test-session', 'echo hello', 'Enter'],
+        expect.any(Object)
+      );
+      mockSpawn.mockRestore();
+    });
+  });
+
+  describe('capturePane', () => {
+    it('should capture pane content', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('line1\nline2\nline3'));
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      const content = await tmuxUtils.capturePane('test-session');
+
+      expect(content).toBe('line1\nline2\nline3');
+      mockSpawn.mockRestore();
+    });
+  });
+
+  describe('listSessions', () => {
+    it('should list all sessions', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('session1\nsession2\nsession3'));
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      const sessions = await tmuxUtils.listSessions();
+
+      expect(sessions).toEqual(['session1', 'session2', 'session3']);
+      mockSpawn.mockRestore();
+    });
+
+    it('should filter sessions by pattern', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode('syzygy-pm\nsyzygy-dev-1\nother-session')
+            );
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      const sessions = await tmuxUtils.listSessions('^syzygy-');
+
+      expect(sessions).toEqual(['syzygy-pm', 'syzygy-dev-1']);
+      mockSpawn.mockRestore();
+    });
+
+    it('should return empty array if no server running', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('no server running'));
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(1),
+      } as any));
+
+      const sessions = await tmuxUtils.listSessions();
+
+      expect(sessions).toEqual([]);
+      mockSpawn.mockRestore();
+    });
+  });
+
+  describe('sessionExists', () => {
+    it('should return true if session exists', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      const exists = await tmuxUtils.sessionExists('test-session');
+
+      expect(exists).toBe(true);
+      mockSpawn.mockRestore();
+    });
+
+    it('should return false if session does not exist', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(1),
+      } as any));
+
+      const exists = await tmuxUtils.sessionExists('nonexistent');
+
+      expect(exists).toBe(false);
+      mockSpawn.mockRestore();
+    });
+  });
+
+  describe('killSessions', () => {
+    it('should kill all sessions matching pattern', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      // Mock listSessions
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(
+              new TextEncoder().encode('syzygy-pm\nsyzygy-dev-1\nsyzygy-dev-2')
+            );
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      // Mock destroySession calls (3 times)
+      for (let i = 0; i < 3; i++) {
+        mockSpawn.mockImplementationOnce(() => ({
+          stdout: new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          stderr: new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          exited: Promise.resolve(0),
+        } as any));
+      }
+
+      await tmuxUtils.killSessions('^syzygy-');
+
+      expect(mockSpawn).toHaveBeenCalledTimes(4); // 1 list + 3 kills
+      mockSpawn.mockRestore();
+    });
+
+    it('should do nothing if no sessions match', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('other-session'));
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      await tmuxUtils.killSessions('^syzygy-');
+
+      expect(mockSpawn).toHaveBeenCalledTimes(1); // Only list call
+      mockSpawn.mockRestore();
+    });
+  });
+});
