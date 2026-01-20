@@ -31,3 +31,26 @@ export interface AgentConfig {
   instructions: string;
   alwaysRunning: boolean;  // Core agents vs on-demand workers
 }
+
+export interface AgentInstruction {
+  agentId: string;
+  instruction: string;
+  timestamp: Date;
+  context?: Record<string, unknown>;
+}
+
+export interface AgentOutput {
+  agentId: string;
+  content: string;
+  timestamp: Date;
+  isComplete: boolean;
+  hasError: boolean;
+}
+
+export interface AgentMonitorOptions {
+  pollInterval?: number;  // Milliseconds between checks (default: 1000)
+  timeout?: number;       // Maximum wait time in milliseconds
+  onOutput?: (output: AgentOutput) => void;
+  onComplete?: () => void;
+  onError?: (error: Error) => void;
+}

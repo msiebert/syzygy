@@ -35,3 +35,50 @@ export interface WorkflowMetrics {
   filesModified: number;
   duration: number; // milliseconds
 }
+
+export type WorkflowEventType =
+  | 'state:transition'
+  | 'state:error'
+  | 'artifact:created'
+  | 'artifact:modified'
+  | 'artifact:deleted'
+  | 'artifact:claimed'
+  | 'artifact:completed'
+  | 'agent:started'
+  | 'agent:completed'
+  | 'agent:failed';
+
+export interface WorkflowEvent {
+  type: WorkflowEventType;
+  timestamp: Date;
+  payload: WorkflowEventPayload;
+}
+
+export type WorkflowEventPayload =
+  | StateTransitionPayload
+  | StateErrorPayload
+  | ArtifactPayload
+  | AgentPayload;
+
+export interface StateTransitionPayload {
+  from: WorkflowState;
+  to: WorkflowState;
+  featureName: string;
+}
+
+export interface StateErrorPayload {
+  state: WorkflowState;
+  error: WorkflowError;
+}
+
+export interface ArtifactPayload {
+  artifactPath: string;
+  stageName: string;
+  agentId?: string;
+}
+
+export interface AgentPayload {
+  agentId: string;
+  role: string;
+  error?: string;
+}

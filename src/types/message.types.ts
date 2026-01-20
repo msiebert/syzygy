@@ -27,3 +27,62 @@ export interface TmuxPaneCapture {
   content: string;    // Captured pane content
   timestamp: Date;
 }
+
+export class SessionError extends Error {
+  public readonly context: Record<string, unknown> | undefined;
+
+  constructor(
+    message: string,
+    public readonly agentId: string,
+    context?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = 'SessionError';
+    this.context = context;
+  }
+}
+
+export class AgentRunnerError extends Error {
+  public readonly context: Record<string, unknown> | undefined;
+
+  constructor(
+    message: string,
+    public readonly agentId: string,
+    context?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = 'AgentRunnerError';
+    this.context = context;
+  }
+}
+
+export class WorkflowEngineError extends Error {
+  public readonly attemptedState: string | undefined;
+  public readonly context: Record<string, unknown> | undefined;
+
+  constructor(
+    message: string,
+    public readonly currentState: string,
+    attemptedState?: string,
+    context?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = 'WorkflowEngineError';
+    this.attemptedState = attemptedState;
+    this.context = context;
+  }
+}
+
+export class FileMonitorError extends Error {
+  public readonly context: Record<string, unknown> | undefined;
+
+  constructor(
+    message: string,
+    public readonly path: string,
+    context?: Record<string, unknown>
+  ) {
+    super(message);
+    this.name = 'FileMonitorError';
+    this.context = context;
+  }
+}
