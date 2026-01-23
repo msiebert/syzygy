@@ -3,6 +3,8 @@
  */
 
 import type { TmuxSession } from '../types/message.types.js';
+import type { SessionName } from '../types/agent.types.js';
+import { toAgentId, toSessionName } from '../types/agent.types.js';
 import { createModuleLogger } from '@utils/logger';
 
 const logger = createModuleLogger('tmux-utils');
@@ -48,7 +50,7 @@ async function execTmux(args: string[]): Promise<string> {
  * Create a new tmux session
  */
 export async function createSession(
-  sessionName: string,
+  sessionName: SessionName,
   command?: string
 ): Promise<TmuxSession> {
   logger.info({ sessionName, command }, 'Creating tmux session');
@@ -87,7 +89,7 @@ export async function createSession(
 
     const session: TmuxSession = {
       name: sessionName,
-      agentId: sessionName,
+      agentId: toAgentId('placeholder'), // Will be overridden by session-manager
       windowId,
       paneId,
       pid: parseInt(pidStr, 10),
@@ -105,7 +107,7 @@ export async function createSession(
 /**
  * Destroy a tmux session
  */
-export async function destroySession(sessionName: string): Promise<void> {
+export async function destroySession(sessionName: SessionName): Promise<void> {
   logger.info({ sessionName }, 'Destroying tmux session');
 
   try {
@@ -125,7 +127,7 @@ export async function destroySession(sessionName: string): Promise<void> {
  * Send keys to a tmux session
  */
 export async function sendKeys(
-  sessionName: string,
+  sessionName: SessionName,
   keys: string
 ): Promise<void> {
   logger.debug({ sessionName, keys }, 'Sending keys to tmux session');
@@ -147,7 +149,7 @@ export async function sendKeys(
 /**
  * Capture pane content from a tmux session
  */
-export async function capturePane(sessionName: string): Promise<string> {
+export async function capturePane(sessionName: SessionName): Promise<string> {
   logger.debug({ sessionName }, 'Capturing pane content');
 
   try {
@@ -213,7 +215,7 @@ export async function killSessions(pattern: string): Promise<void> {
       return;
     }
 
-    await Promise.all(sessions.map(session => destroySession(session)));
+    await Promise.all(sessions.map(session => destroySession(toSessionName(session))));
 
     logger.info({ pattern, count: sessions.length }, 'Sessions killed successfully');
   } catch (error) {
@@ -225,7 +227,7 @@ export async function killSessions(pattern: string): Promise<void> {
 /**
  * Check if a session exists
  */
-export async function sessionExists(sessionName: string): Promise<boolean> {
+export async function sessionExists(sessionName: SessionName): Promise<boolean> {
   logger.debug({ sessionName }, 'Checking if session exists');
 
   try {

@@ -13,6 +13,7 @@ import {
   getWorkflowOrder,
 } from '../../src/agents/agent-config.js';
 import type { AgentRole } from '../../src/types/agent.types.js';
+import { toSessionName } from '../../src/types/agent.types.js';
 
 describe('agent-config', () => {
   describe('AGENT_CONFIGS', () => {
@@ -135,17 +136,17 @@ describe('agent-config', () => {
 
   describe('getSessionName', () => {
     it('should generate session name without instance', () => {
-      expect(getSessionName('product-manager')).toBe('syzygy-pm');
-      expect(getSessionName('architect')).toBe('syzygy-architect');
+      expect(getSessionName('product-manager')).toBe(toSessionName('syzygy-pm'));
+      expect(getSessionName('architect')).toBe(toSessionName('syzygy-architect'));
     });
 
     it('should generate session name with instance', () => {
-      expect(getSessionName('developer', 1)).toBe('syzygy-dev-1');
-      expect(getSessionName('developer', 2)).toBe('syzygy-dev-2');
+      expect(getSessionName('developer', 1)).toBe(toSessionName('syzygy-dev-1'));
+      expect(getSessionName('developer', 2)).toBe(toSessionName('syzygy-dev-2'));
     });
 
     it('should handle instance for non-parallel agents', () => {
-      expect(getSessionName('architect', 1)).toBe('syzygy-architect-1');
+      expect(getSessionName('architect', 1)).toBe(toSessionName('syzygy-architect-1'));
     });
 
     it('should throw for unknown role', () => {

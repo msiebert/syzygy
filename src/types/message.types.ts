@@ -2,6 +2,8 @@
  * Message format types for inter-agent communication
  */
 
+import type { AgentId, SessionName } from './agent.types.js';
+
 export interface LockFile {
   agentId: string;
   claimedAt: string;  // ISO 8601 timestamp
@@ -9,8 +11,8 @@ export interface LockFile {
 }
 
 export interface TmuxSession {
-  name: string;       // Session name (unique)
-  agentId: string;    // Associated agent ID
+  name: SessionName;  // Session name (unique)
+  agentId: AgentId;   // Associated agent ID
   windowId: string;   // Tmux window ID
   paneId: string;     // Tmux pane ID
   pid: number;        // Process ID
@@ -23,7 +25,7 @@ export interface TmuxCommand {
 }
 
 export interface TmuxPaneCapture {
-  sessionName: string;
+  sessionName: SessionName;
   content: string;    // Captured pane content
   timestamp: Date;
 }
@@ -47,7 +49,7 @@ export class AgentRunnerError extends Error {
 
   constructor(
     message: string,
-    public readonly agentId: string,
+    public readonly sessionName: SessionName,
     context?: Record<string, unknown>
   ) {
     super(message);

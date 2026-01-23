@@ -5,6 +5,7 @@
 import { describe, it, expect, mock, beforeEach, afterEach } from 'bun:test';
 import { Orchestrator } from '../../src/core/orchestrator.js';
 import type { Agent } from '../../src/types/agent.types.js';
+import { toSessionName } from '../../src/types/agent.types.js';
 import type { TmuxSession } from '../../src/types/message.types.js';
 
 // Mock modules
@@ -296,7 +297,7 @@ describe('Orchestrator', () => {
       await orchestrator.startWorkflow('test-feature');
 
       const pmAgent = orchestrator.getAgent('product-manager');
-      expect(pmAgent?.sessionName).toBe('syzygy-pm');
+      expect(pmAgent?.sessionName).toBe(toSessionName('syzygy-pm'));
     });
 
     it('should create Architect agent with correct session name', async () => {
@@ -304,7 +305,7 @@ describe('Orchestrator', () => {
       await orchestrator.startWorkflow('test-feature');
 
       const archAgent = orchestrator.getAgent('architect');
-      expect(archAgent?.sessionName).toBe('syzygy-architect');
+      expect(archAgent?.sessionName).toBe(toSessionName('syzygy-architect'));
     });
 
     it('should set PM agent status to working after instruction sent', async () => {

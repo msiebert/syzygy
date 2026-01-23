@@ -6,6 +6,7 @@ import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { AgentRunner } from '@core/agent-runner';
 import { AgentRunnerError } from '../../src/types/message.types';
 import type { AgentOutput } from '../../src/types/agent.types';
+import { toSessionName } from '../../src/types/agent.types';
 
 // Mock tmux-utils
 const mockSendKeys = mock(async (_sessionName: string, _keys: string): Promise<void> => {
@@ -23,7 +24,7 @@ mock.module('@utils/tmux-utils', () => ({
 
 describe('AgentRunner', () => {
   let runner: AgentRunner;
-  const agentId = 'test-agent-1';
+  const sessionName = toSessionName('syzygy-test');
 
   beforeEach(() => {
     runner = new AgentRunner();
@@ -41,39 +42,39 @@ describe('AgentRunner', () => {
     it('should send instruction to agent', async () => {
       const instruction = 'Implement feature X';
 
-      await runner.sendInstruction(agentId, instruction);
+      await runner.sendInstruction(sessionName, instruction);
 
-      expect(mockSendKeys).toHaveBeenCalledWith(agentId, instruction);
+      expect(mockSendKeys).toHaveBeenCalledWith(sessionName, instruction);
     });
 
     it('should throw AgentRunnerError on failure', async () => {
       mockSendKeys.mockRejectedValueOnce(new Error('Tmux error'));
 
       await expect(
-        runner.sendInstruction(agentId, 'Test instruction')
+        runner.sendInstruction(sessionName, 'Test instruction')
       ).rejects.toThrow(AgentRunnerError);
     });
 
-    it('should include agent ID in error', async () => {
+    it('should include session name in error', async () => {
       mockSendKeys.mockRejectedValueOnce(new Error('Tmux error'));
 
       try {
-        await runner.sendInstruction(agentId, 'Test instruction');
+        await runner.sendInstruction(sessionName, 'Test instruction');
         expect.unreachable('Should have thrown');
       } catch (error) {
         expect(error).toBeInstanceOf(AgentRunnerError);
-        expect((error as AgentRunnerError).agentId).toBe(agentId);
+        expect((error as AgentRunnerError).sessionName).toBe(sessionName);
       }
     });
   });
 
   describe('captureOutput', () => {
     it('should capture agent output', async () => {
-      const output = await runner.captureOutput(agentId);
+      const output = await runner.captureOutput(sessionName);
 
-      expect(mockCapturePane).toHaveBeenCalledWith(agentId);
+      expect(mockCapturePane).toHaveBeenCalledWith(sessionName);
       expect(output).toBeDefined();
-      expect(output.agentId).toBe(agentId);
+      expect(output.sessionName).toBe(sessionName);
       expect(output.content).toBe('Sample output');
       expect(output.timestamp).toBeInstanceOf(Date);
     });
@@ -89,7 +90,7 @@ describe('AgentRunner', () => {
       for (const { output: text, expectedComplete } of testCases) {
         mockCapturePane.mockResolvedValueOnce(text);
 
-        const output = await runner.captureOutput(agentId);
+        const output = await runner.captureOutput(sessionName);
 
         expect(output.isComplete).toBe(expectedComplete);
       }
@@ -107,7 +108,7 @@ describe('AgentRunner', () => {
       for (const { output: text, expectedError } of testCases) {
         mockCapturePane.mockResolvedValueOnce(text);
 
-        const output = await runner.captureOutput(agentId);
+        const output = await runner.captureOutput(sessionName);
 
         expect(output.hasError).toBe(expectedError);
       }
@@ -117,14 +118,14 @@ describe('AgentRunner', () => {
       mockCapturePane.mockRejectedValueOnce(new Error('Capture error'));
 
       await expect(
-        runner.captureOutput(agentId)
+        runner.captureOutput(sessionName)
       ).rejects.toThrow(AgentRunnerError);
     });
 
     it('should analyze output correctly', async () => {
       mockCapturePane.mockResolvedValueOnce('Task completed\nAll tests passing');
 
-      const output = await runner.captureOutput(agentId);
+      const output = await runner.captureOutput(sessionName);
 
       expect(output.isComplete).toBe(true);
       expect(output.hasError).toBe(false);
@@ -138,7 +139,7 @@ describe('AgentRunner', () => {
         .mockResolvedValueOnce('Working...')
         .mockResolvedValueOnce('Task completed');
 
-      const result = await runner.waitForCompletion(agentId, 5000);
+      const result = await runner.waitForCompletion(sessionName, 5000);
 
       expect(result).toBe(true);
     });
@@ -146,7 +147,7 @@ describe('AgentRunner', () => {
     it('should return false when error detected', async () => {
       mockCapturePane.mockResolvedValueOnce('Error: Something failed');
 
-      const result = await runner.waitForCompletion(agentId, 5000);
+      const result = await runner.waitForCompletion(sessionName, 5000);
 
       expect(result).toBe(false);
     });
@@ -154,7 +155,7 @@ describe('AgentRunner', () => {
     it('should return false on timeout', async () => {
       mockCapturePane.mockResolvedValue('Still working...');
 
-      const result = await runner.waitForCompletion(agentId, 100);
+      const result = await runner.waitForCompletion(sessionName, 100);
 
       expect(result).toBe(false);
     }, 2000); // Increase test timeout
@@ -165,7 +166,7 @@ describe('AgentRunner', () => {
         .mockResolvedValueOnce('Working... 2')
         .mockResolvedValueOnce('Task completed');
 
-      await runner.waitForCompletion(agentId, 5000);
+      await runner.waitForCompletion(sessionName, 5000);
 
       expect(mockCapturePane.mock.calls.length).toBeGreaterThanOrEqual(3);
     });
@@ -174,7 +175,7 @@ describe('AgentRunner', () => {
       mockCapturePane.mockRejectedValueOnce(new Error('Capture failed'));
 
       await expect(
-        runner.waitForCompletion(agentId, 5000)
+        runner.waitForCompletion(sessionName, 5000)
       ).rejects.toThrow(AgentRunnerError);
     });
   });
@@ -185,7 +186,7 @@ describe('AgentRunner', () => {
 
       mockCapturePane.mockResolvedValue('Working...');
 
-      const monitor = runner.monitorAgent(agentId, {
+      const monitor = runner.monitorAgent(sessionName, {
         pollInterval: 50,
         onOutput,
       });
@@ -205,7 +206,7 @@ describe('AgentRunner', () => {
         .mockResolvedValueOnce('Working...')
         .mockResolvedValueOnce('Task completed');
 
-      const monitor = runner.monitorAgent(agentId, {
+      const monitor = runner.monitorAgent(sessionName, {
         pollInterval: 50,
         onComplete,
       });
@@ -223,7 +224,7 @@ describe('AgentRunner', () => {
 
       mockCapturePane.mockResolvedValueOnce('Error: Test failed');
 
-      const monitor = runner.monitorAgent(agentId, {
+      const monitor = runner.monitorAgent(sessionName, {
         pollInterval: 50,
         onError,
       });
@@ -241,7 +242,7 @@ describe('AgentRunner', () => {
 
       mockCapturePane.mockResolvedValue('Working...');
 
-      const monitor = runner.monitorAgent(agentId, {
+      const monitor = runner.monitorAgent(sessionName, {
         pollInterval: 50,
         timeout: 150,
         onError,
@@ -261,7 +262,7 @@ describe('AgentRunner', () => {
 
       mockCapturePane.mockResolvedValue('Working...');
 
-      const monitor = runner.monitorAgent(agentId, {
+      const monitor = runner.monitorAgent(sessionName, {
         pollInterval: 50,
         onOutput,
       });
@@ -287,7 +288,7 @@ describe('AgentRunner', () => {
 
       mockCapturePane.mockResolvedValue('Working...');
 
-      const monitor = runner.monitorAgent(agentId, {
+      const monitor = runner.monitorAgent(sessionName, {
         pollInterval: 50,
         onOutput,
       });
@@ -308,7 +309,7 @@ describe('AgentRunner', () => {
         .mockResolvedValueOnce('Working...')
         .mockRejectedValueOnce(new Error('Capture failed'));
 
-      const monitor = runner.monitorAgent(agentId, {
+      const monitor = runner.monitorAgent(sessionName, {
         pollInterval: 50,
         onError,
       });
@@ -326,7 +327,7 @@ describe('AgentRunner', () => {
 
       mockCapturePane.mockResolvedValue('Working...');
 
-      const monitor = runner.monitorAgent(agentId, {
+      const monitor = runner.monitorAgent(sessionName, {
         onOutput,
       });
 
@@ -344,7 +345,7 @@ describe('AgentRunner', () => {
 
       mockCapturePane.mockResolvedValue('Working...');
 
-      const monitor = runner.monitorAgent(agentId, {
+      const monitor = runner.monitorAgent(sessionName, {
         pollInterval: 5000, // Very long interval
         onOutput,
       });

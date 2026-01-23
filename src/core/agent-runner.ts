@@ -5,6 +5,7 @@
 import type {
   AgentOutput,
   AgentMonitorOptions,
+  SessionName,
 } from '../types/agent.types.js';
 import { AgentRunnerError } from '../types/message.types.js';
 import { createModuleLogger } from '@utils/logger';
@@ -33,20 +34,20 @@ export class AgentRunner {
   /**
    * Send an instruction to an agent
    */
-  async sendInstruction(agentId: string, instruction: string): Promise<void> {
-    logger.info({ agentId, instructionLength: instruction.length }, 'Sending instruction to agent');
+  async sendInstruction(sessionName: SessionName, instruction: string): Promise<void> {
+    logger.info({ sessionName, instructionLength: instruction.length }, 'Sending instruction to session');
 
     try {
       // Send instruction via tmux
-      await sendKeys(agentId, instruction);
+      await sendKeys(sessionName, instruction);
 
-      logger.info({ agentId }, 'Instruction sent successfully');
+      logger.info({ sessionName }, 'Instruction sent successfully');
     } catch (error) {
-      logger.error({ agentId, error }, 'Failed to send instruction');
+      logger.error({ sessionName, error }, 'Failed to send instruction');
 
       throw new AgentRunnerError(
-        `Failed to send instruction to agent ${agentId}`,
-        agentId,
+        `Failed to send instruction to session ${sessionName}`,
+        sessionName,
         { originalError: error }
       );
     }
@@ -55,18 +56,19 @@ export class AgentRunner {
   /**
    * Capture current output from an agent
    */
-  async captureOutput(agentId: string): Promise<AgentOutput> {
-    logger.debug({ agentId }, 'Capturing agent output');
+  async captureOutput(sessionName: SessionName): Promise<AgentOutput> {
+    logger.debug({ sessionName }, 'Capturing session output');
 
     try {
-      const content = await capturePane(agentId);
+      const content = await capturePane(sessionName);
 
       // Analyze output for completion and errors
       const isComplete = this.detectCompletion(content);
       const hasError = this.detectError(content);
 
       const output: AgentOutput = {
-        agentId,
+        agentId: sessionName as unknown as import('../types/agent.types.js').AgentId,  // Temporary - will fix in agent tracking
+        sessionName,
         content,
         timestamp: new Date(),
         isComplete,
@@ -74,17 +76,17 @@ export class AgentRunner {
       };
 
       logger.debug(
-        { agentId, lines: content.split('\n').length, isComplete, hasError },
+        { sessionName, lines: content.split('\n').length, isComplete, hasError },
         'Output captured and analyzed'
       );
 
       return output;
     } catch (error) {
-      logger.error({ agentId, error }, 'Failed to capture output');
+      logger.error({ sessionName, error }, 'Failed to capture output');
 
       throw new AgentRunnerError(
-        `Failed to capture output from agent ${agentId}`,
-        agentId,
+        `Failed to capture output from session ${sessionName}`,
+        sessionName,
         { originalError: error }
       );
     }
@@ -93,23 +95,23 @@ export class AgentRunner {
   /**
    * Wait for agent to complete a task
    */
-  async waitForCompletion(agentId: string, timeout: number): Promise<boolean> {
-    logger.info({ agentId, timeout }, 'Waiting for agent completion');
+  async waitForCompletion(sessionName: SessionName, timeout: number): Promise<boolean> {
+    logger.info({ sessionName, timeout }, 'Waiting for session completion');
 
     const startTime = Date.now();
     const pollInterval = 1000; // 1 second
 
     try {
       while (Date.now() - startTime < timeout) {
-        const output = await this.captureOutput(agentId);
+        const output = await this.captureOutput(sessionName);
 
         if (output.hasError) {
-          logger.warn({ agentId }, 'Error detected in agent output');
+          logger.warn({ sessionName }, 'Error detected in session output');
           return false;
         }
 
         if (output.isComplete) {
-          logger.info({ agentId }, 'Agent completed successfully');
+          logger.info({ sessionName }, 'Session completed successfully');
           return true;
         }
 
@@ -117,14 +119,14 @@ export class AgentRunner {
         await new Promise(resolve => setTimeout(resolve, pollInterval));
       }
 
-      logger.warn({ agentId, timeout }, 'Timeout waiting for agent completion');
+      logger.warn({ sessionName, timeout }, 'Timeout waiting for session completion');
       return false;
     } catch (error) {
-      logger.error({ agentId, error }, 'Error while waiting for completion');
+      logger.error({ sessionName, error }, 'Error while waiting for completion');
 
       throw new AgentRunnerError(
-        `Error while waiting for agent ${agentId} to complete`,
-        agentId,
+        `Error while waiting for session ${sessionName} to complete`,
+        sessionName,
         { originalError: error }
       );
     }
@@ -134,10 +136,10 @@ export class AgentRunner {
    * Monitor an agent with periodic callbacks
    */
   monitorAgent(
-    agentId: string,
+    sessionName: SessionName,
     options: AgentMonitorOptions
   ): { stop: () => void } {
-    logger.info({ agentId, options }, 'Starting agent monitoring');
+    logger.info({ sessionName, options }, 'Starting session monitoring');
 
     const pollInterval = options.pollInterval ?? 1000;
     const startTime = Date.now();
@@ -151,26 +153,26 @@ export class AgentRunner {
       }
 
       try {
-        const output = await this.captureOutput(agentId);
+        const output = await this.captureOutput(sessionName);
 
         // Call output callback if provided
         if (options.onOutput) {
           try {
             options.onOutput(output);
           } catch (error) {
-            logger.error({ agentId, error }, 'Error in onOutput callback');
+            logger.error({ sessionName, error }, 'Error in onOutput callback');
           }
         }
 
         // Check for completion
         if (output.isComplete) {
-          logger.info({ agentId }, 'Agent completed during monitoring');
+          logger.info({ sessionName }, 'Session completed during monitoring');
 
           if (options.onComplete) {
             try {
               options.onComplete();
             } catch (error) {
-              logger.error({ agentId, error }, 'Error in onComplete callback');
+              logger.error({ sessionName, error }, 'Error in onComplete callback');
             }
           }
 
@@ -181,13 +183,13 @@ export class AgentRunner {
 
         // Check for errors
         if (output.hasError) {
-          logger.warn({ agentId }, 'Error detected during monitoring');
+          logger.warn({ sessionName }, 'Error detected during monitoring');
 
           if (options.onError) {
             try {
               options.onError(new Error('Agent error detected in output'));
             } catch (error) {
-              logger.error({ agentId, error }, 'Error in onError callback');
+              logger.error({ sessionName, error }, 'Error in onError callback');
             }
           }
 
@@ -198,13 +200,13 @@ export class AgentRunner {
 
         // Check for timeout
         if (options.timeout && Date.now() - startTime >= options.timeout) {
-          logger.warn({ agentId, timeout: options.timeout }, 'Monitoring timeout reached');
+          logger.warn({ sessionName, timeout: options.timeout }, 'Monitoring timeout reached');
 
           if (options.onError) {
             try {
               options.onError(new Error('Monitoring timeout'));
             } catch (error) {
-              logger.error({ agentId, error }, 'Error in onError callback');
+              logger.error({ sessionName, error }, 'Error in onError callback');
             }
           }
 
@@ -213,13 +215,13 @@ export class AgentRunner {
           return;
         }
       } catch (error) {
-        logger.error({ agentId, error }, 'Error during monitoring poll');
+        logger.error({ sessionName, error }, 'Error during monitoring poll');
 
         if (options.onError) {
           try {
             options.onError(error as Error);
           } catch (callbackError) {
-            logger.error({ agentId, error: callbackError }, 'Error in onError callback');
+            logger.error({ sessionName, error: callbackError }, 'Error in onError callback');
           }
         }
 
@@ -236,7 +238,7 @@ export class AgentRunner {
 
     return {
       stop: () => {
-        logger.info({ agentId }, 'Stopping agent monitoring');
+        logger.info({ sessionName }, 'Stopping session monitoring');
         stopped = true;
         clearInterval(intervalId);
       },

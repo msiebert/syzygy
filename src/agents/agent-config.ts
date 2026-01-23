@@ -10,7 +10,8 @@
  * - Documenter: Updates all project documentation
  */
 
-import type { AgentRole, AgentConfig } from '../types/agent.types.js';
+import type { AgentRole, AgentConfig, SessionName } from '../types/agent.types.js';
+import { toSessionName } from '../types/agent.types.js';
 
 /**
  * Configuration for each agent role
@@ -86,7 +87,7 @@ export function getOnDemandAgents(): AgentConfig[] {
  * getSessionName('developer', 1) // 'syzygy-dev-1'
  * getSessionName('architect') // 'syzygy-architect'
  */
-export function getSessionName(role: AgentRole, instance?: number): string {
+export function getSessionName(role: AgentRole, instance?: number): SessionName {
   const config = getAgentConfig(role);
   if (!config) {
     throw new Error(`Unknown agent role: ${role}`);
@@ -96,10 +97,10 @@ export function getSessionName(role: AgentRole, instance?: number): string {
 
   // For roles that support multiple instances (like developers)
   if (instance !== undefined) {
-    return `${prefix}-${instance}`;
+    return toSessionName(`${prefix}-${instance}`);
   }
 
-  return prefix;
+  return toSessionName(prefix);
 }
 
 /**

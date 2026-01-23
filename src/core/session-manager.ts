@@ -2,16 +2,16 @@
  * Tmux session lifecycle management
  */
 
-import type { Agent } from '../types/agent.types.js';
+import type { Agent, AgentId } from '../types/agent.types.js';
 import type { TmuxSession } from '../types/message.types.js';
 import { SessionError } from '../types/message.types.js';
 import { createModuleLogger } from '@utils/logger';
-import { createSession, destroySession, sessionExists } from '@utils/tmux-utils';
+import { createSession, destroySession } from '@utils/tmux-utils';
 
 const logger = createModuleLogger('session-manager');
 
 export class SessionManager {
-  private sessions: Map<string, TmuxSession> = new Map();
+  private sessions: Map<AgentId, TmuxSession> = new Map();
 
   /**
    * Create a new agent session
@@ -67,22 +67,14 @@ export class SessionManager {
   /**
    * Destroy an agent session
    */
-  async destroyAgentSession(agentId: string): Promise<void> {
+  async destroyAgentSession(agentId: AgentId): Promise<void> {
     logger.info({ agentId }, 'Destroying agent session');
 
     try {
       const session = this.sessions.get(agentId);
 
       if (!session) {
-        logger.warn({ agentId }, 'Session not found in map, checking tmux');
-
-        // Try to destroy anyway in case it exists in tmux but not in map
-        const exists = await sessionExists(agentId);
-        if (exists) {
-          await destroySession(agentId);
-          logger.info({ agentId }, 'Orphaned session destroyed');
-        }
-
+        logger.warn({ agentId }, 'Session not found in map, cannot destroy');
         return;
       }
 
@@ -110,7 +102,7 @@ export class SessionManager {
   /**
    * Get session by agent ID
    */
-  getSession(agentId: string): TmuxSession | undefined {
+  getSession(agentId: AgentId): TmuxSession | undefined {
     return this.sessions.get(agentId);
   }
 

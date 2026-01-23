@@ -61,6 +61,13 @@ export class WorkflowEngine {
   }
 
   /**
+   * Get feature name
+   */
+  getFeatureName(): string {
+    return this.context.featureName;
+  }
+
+  /**
    * Check if a transition is valid
    */
   canTransition(to: WorkflowState): boolean {

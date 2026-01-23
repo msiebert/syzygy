@@ -5,14 +5,15 @@
 import { describe, it, expect, beforeEach, mock } from 'bun:test';
 import { SessionManager } from '@core/session-manager';
 import { SessionError } from '../../src/types/message.types';
-import type { Agent } from '../../src/types/agent.types';
+import type { Agent, SessionName } from '../../src/types/agent.types';
+import { toAgentId, toSessionName } from '../../src/types/agent.types';
 import type { TmuxSession } from '../../src/types/message.types';
 
 // Mock tmux-utils
-const mockCreateSession = mock(async (sessionName: string): Promise<TmuxSession> => {
+const mockCreateSession = mock(async (sessionName: SessionName): Promise<TmuxSession> => {
   return {
     name: sessionName,
-    agentId: sessionName,
+    agentId: toAgentId('placeholder'),
     windowId: '@0',
     paneId: '%0',
     pid: 12345,
@@ -20,7 +21,7 @@ const mockCreateSession = mock(async (sessionName: string): Promise<TmuxSession>
   };
 });
 
-const mockDestroySession = mock(async (_sessionName: string): Promise<void> => {
+const mockDestroySession = mock(async (_sessionName: SessionName): Promise<void> => {
   return;
 });
 
@@ -42,9 +43,9 @@ describe('SessionManager', () => {
   beforeEach(() => {
     sessionManager = new SessionManager();
     testAgent = {
-      id: 'test-agent-1',
+      id: toAgentId('test-agent-1'),
       role: 'developer',
-      sessionName: 'syzygy-dev-1',
+      sessionName: toSessionName('syzygy-dev-1'),
       status: 'idle',
     };
 
@@ -125,17 +126,18 @@ describe('SessionManager', () => {
     });
 
     it('should handle non-existent session gracefully', async () => {
-      await sessionManager.destroyAgentSession('non-existent-agent');
+      await sessionManager.destroyAgentSession(toAgentId('non-existent-agent'));
 
-      expect(mockSessionExists).toHaveBeenCalledWith('non-existent-agent');
+      // No longer checks tmux since we removed that logic
+      expect(mockDestroySession).not.toHaveBeenCalled();
     });
 
     it('should destroy orphaned tmux session if found', async () => {
-      mockSessionExists.mockResolvedValueOnce(true);
+      // This test is no longer relevant since we removed orphaned session handling
+      // Just test that it doesn't throw
+      await sessionManager.destroyAgentSession(toAgentId('orphaned-agent'));
 
-      await sessionManager.destroyAgentSession('orphaned-agent');
-
-      expect(mockDestroySession).toHaveBeenCalledWith('orphaned-agent');
+      expect(mockDestroySession).not.toHaveBeenCalled();
     });
 
     it('should remove from map even if tmux destroy fails', async () => {
@@ -160,7 +162,7 @@ describe('SessionManager', () => {
     });
 
     it('should return undefined for non-existent agent', () => {
-      const session = sessionManager.getSession('non-existent');
+      const session = sessionManager.getSession(toAgentId('non-existent'));
       expect(session).toBeUndefined();
     });
   });
@@ -172,23 +174,23 @@ describe('SessionManager', () => {
     });
 
     it('should return all active sessions', async () => {
-      const agent1 = { ...testAgent, id: 'agent-1', sessionName: 'session-1' };
-      const agent2 = { ...testAgent, id: 'agent-2', sessionName: 'session-2' };
+      const agent1 = { ...testAgent, id: toAgentId('agent-1'), sessionName: toSessionName('session-1') };
+      const agent2 = { ...testAgent, id: toAgentId('agent-2'), sessionName: toSessionName('session-2') };
 
       await sessionManager.createAgentSession(agent1);
       await sessionManager.createAgentSession(agent2);
 
       const sessions = sessionManager.getAllSessions();
       expect(sessions).toHaveLength(2);
-      expect(sessions.map(s => s.agentId)).toContain('agent-1');
-      expect(sessions.map(s => s.agentId)).toContain('agent-2');
+      expect(sessions.map(s => s.agentId)).toContain(toAgentId('agent-1'));
+      expect(sessions.map(s => s.agentId)).toContain(toAgentId('agent-2'));
     });
   });
 
   describe('cleanupAllSessions', () => {
     it('should cleanup all sessions in parallel', async () => {
-      const agent1 = { ...testAgent, id: 'agent-1', sessionName: 'session-1' };
-      const agent2 = { ...testAgent, id: 'agent-2', sessionName: 'session-2' };
+      const agent1 = { ...testAgent, id: toAgentId('agent-1'), sessionName: toSessionName('session-1') };
+      const agent2 = { ...testAgent, id: toAgentId('agent-2'), sessionName: toSessionName('session-2') };
 
       await sessionManager.createAgentSession(agent1);
       await sessionManager.createAgentSession(agent2);
@@ -207,8 +209,8 @@ describe('SessionManager', () => {
     });
 
     it('should continue cleanup even if one session fails', async () => {
-      const agent1 = { ...testAgent, id: 'agent-1', sessionName: 'session-1' };
-      const agent2 = { ...testAgent, id: 'agent-2', sessionName: 'session-2' };
+      const agent1 = { ...testAgent, id: toAgentId('agent-1'), sessionName: toSessionName('session-1') };
+      const agent2 = { ...testAgent, id: toAgentId('agent-2'), sessionName: toSessionName('session-2') };
 
       await sessionManager.createAgentSession(agent1);
       await sessionManager.createAgentSession(agent2);

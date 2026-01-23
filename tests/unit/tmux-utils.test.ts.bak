@@ -93,7 +93,7 @@ describe('tmux-utils', () => {
         exited: Promise.resolve(0),
       } as any));
 
-      await tmuxUtils.createSession(toSessionName('test'), 'bash');
+      await tmuxUtils.createSession('test', 'bash');
 
       expect(mockSpawn).toHaveBeenCalledTimes(2);
       mockSpawn.mockRestore();
@@ -117,7 +117,7 @@ describe('tmux-utils', () => {
         exited: Promise.resolve(1),
       } as any));
 
-      await expect(tmuxUtils.createSession(toSessionName('test'))).rejects.toThrow(tmuxUtils.TmuxError);
+      await expect(tmuxUtils.createSession('test')).rejects.toThrow(tmuxUtils.TmuxError);
 
       mockSpawn.mockRestore();
     });
@@ -141,7 +141,7 @@ describe('tmux-utils', () => {
         exited: Promise.resolve(0),
       } as any));
 
-      await tmuxUtils.destroySession(toSessionName('test-session'));
+      await tmuxUtils.destroySession('test-session');
 
       expect(mockSpawn).toHaveBeenCalledWith(['tmux', 'kill-session', '-t', 'test-session'], expect.any(Object));
       mockSpawn.mockRestore();
@@ -166,7 +166,7 @@ describe('tmux-utils', () => {
       } as any));
 
       // Should not throw
-      await tmuxUtils.destroySession(toSessionName('nonexistent'));
+      await tmuxUtils.destroySession('nonexistent');
 
       mockSpawn.mockRestore();
     });
@@ -190,7 +190,7 @@ describe('tmux-utils', () => {
         exited: Promise.resolve(0),
       } as any));
 
-      await tmuxUtils.sendKeys(toSessionName('test-session'), 'echo hello');
+      await tmuxUtils.sendKeys('test-session', 'echo hello');
 
       expect(mockSpawn).toHaveBeenCalledWith(
         ['tmux', 'send-keys', '-t', 'test-session', 'echo hello', 'Enter'],
@@ -219,7 +219,7 @@ describe('tmux-utils', () => {
         exited: Promise.resolve(0),
       } as any));
 
-      const content = await tmuxUtils.capturePane(toSessionName('test-session'));
+      const content = await tmuxUtils.capturePane('test-session');
 
       expect(content).toBe('line1\nline2\nline3');
       mockSpawn.mockRestore();
@@ -320,7 +320,7 @@ describe('tmux-utils', () => {
         exited: Promise.resolve(0),
       } as any));
 
-      const exists = await tmuxUtils.sessionExists(toSessionName('test-session'));
+      const exists = await tmuxUtils.sessionExists('test-session');
 
       expect(exists).toBe(true);
       mockSpawn.mockRestore();
@@ -343,7 +343,7 @@ describe('tmux-utils', () => {
         exited: Promise.resolve(1),
       } as any));
 
-      const exists = await tmuxUtils.sessionExists(toSessionName('nonexistent'));
+      const exists = await tmuxUtils.sessionExists('nonexistent');
 
       expect(exists).toBe(false);
       mockSpawn.mockRestore();

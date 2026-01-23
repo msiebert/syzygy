@@ -2,6 +2,19 @@
  * Agent role types and definitions
  */
 
+// Branded types for compile-time safety
+export type AgentId = string & { readonly __brand: 'AgentId' };
+export type SessionName = string & { readonly __brand: 'SessionName' };
+
+// Helper functions to create branded types
+export function toAgentId(id: string): AgentId {
+  return id as AgentId;
+}
+
+export function toSessionName(name: string): SessionName {
+  return name as SessionName;
+}
+
 export type AgentRole =
   | 'product-manager'
   | 'architect'
@@ -18,9 +31,9 @@ export type AgentStatus =
   | 'complete';
 
 export interface Agent {
-  id: string;              // "pm", "architect", "dev-1", etc.
+  id: AgentId;             // "pm", "architect", "dev-1", etc.
   role: AgentRole;         // Agent's specialized role
-  sessionName: string;     // Tmux session name
+  sessionName: SessionName; // Tmux session name
   status: AgentStatus;     // Current status
   currentTask?: string;    // Path to task file being processed
 }
@@ -33,14 +46,15 @@ export interface AgentConfig {
 }
 
 export interface AgentInstruction {
-  agentId: string;
+  agentId: AgentId;
   instruction: string;
   timestamp: Date;
   context?: Record<string, unknown>;
 }
 
 export interface AgentOutput {
-  agentId: string;
+  agentId: AgentId;
+  sessionName: SessionName;
   content: string;
   timestamp: Date;
   isComplete: boolean;

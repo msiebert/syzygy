@@ -5,6 +5,7 @@
 
 import type { WorkflowState, WorkflowEvent } from '../types/workflow.types.js';
 import type { Agent, AgentRole } from '../types/agent.types.js';
+import { toAgentId } from '../types/agent.types.js';
 import { SessionManager } from './session-manager.js';
 import { WorkflowEngine } from './workflow-engine.js';
 import { FileMonitor } from './file-monitor.js';
@@ -174,7 +175,7 @@ export class Orchestrator {
 
     for (const config of coreConfigs) {
       const agent: Agent = {
-        id: config.role,
+        id: toAgentId(config.role),
         role: config.role,
         sessionName: getSessionName(config.role),
         status: 'idle',
@@ -206,7 +207,7 @@ export class Orchestrator {
 
     const instruction = generateInstructions('product-manager', context);
 
-    await this.agentRunner.sendInstruction(pmAgent.id, instruction);
+    await this.agentRunner.sendInstruction(pmAgent.sessionName, instruction);
 
     // Update agent status
     pmAgent.status = 'working';
@@ -222,54 +223,160 @@ export class Orchestrator {
   private async handleArtifactCreated(event: WorkflowEvent): Promise<void> {
     logger.info({ event }, 'Handling artifact created');
 
-    // TODO: Implement artifact handling logic
-    // 1. Determine which agent should process the artifact
-    // 2. Create agent session if needed (on-demand agents)
-    // 3. Send instructions to agent
-    // 4. Monitor agent progress
-    // 5. Transition workflow state when stage completes
+    try {
+      const payload = event.payload as { artifactPath: string; stageName: string };
+      const { artifactPath, stageName } = payload;
+
+      // Determine next agent based on stage
+      const nextAgentInfo = this.determineNextAgent(stageName);
+
+      if (!nextAgentInfo) {
+        logger.warn({ stageName }, 'No next agent for stage');
+        return;
+      }
+
+      // Create agent if needed (for on-demand agents like developers)
+      const agent = await this.createAgentIfNeeded(
+        nextAgentInfo.role,
+        nextAgentInfo.instance
+      );
+
+      // Prepare instruction context
+      if (!this.workflowEngine) {
+        throw new Error('Workflow engine not initialized');
+      }
+
+      // Build context with only relevant paths
+      const context: InstructionContext = {
+        featureName: this.workflowEngine.getFeatureName(),
+      };
+
+      // Add stage-specific path
+      switch (stageName) {
+        case 'spec':
+          context.specPath = artifactPath;
+          break;
+        case 'arch':
+          context.archPath = artifactPath;
+          break;
+        case 'tasks':
+          context.taskPath = artifactPath;
+          break;
+        case 'tests':
+          context.testPath = artifactPath;
+          break;
+        case 'impl':
+          context.implPath = artifactPath;
+          break;
+      }
+
+      // Send instruction to agent
+      await this.sendInstructionToAgent(agent.id, context);
+
+      // Transition workflow state
+      const nextState = this.getNextWorkflowState(stageName);
+      if (nextState) {
+        this.workflowEngine.transitionTo(nextState);
+      }
+
+      logger.info(
+        { agentId: agent.id, nextState, stageName },
+        'Artifact handled successfully'
+      );
+    } catch (error) {
+      logger.error({ error, event }, 'Failed to handle artifact');
+      this.handleAgentError('orchestrator', error as Error);
+    }
+  }
+
+  /**
+   * Determine which agent should process an artifact from a given stage
+   * @private
+   */
+  private determineNextAgent(
+    stageName: string
+  ): { role: AgentRole; instance?: number } | null {
+    switch (stageName) {
+      case 'spec':
+        return { role: 'architect' };
+      case 'arch':
+        return { role: 'test-engineer' };
+      case 'tasks':
+      case 'tests':
+        return { role: 'developer', instance: 1 }; // TODO: Load balance across multiple developers
+      case 'impl':
+        return { role: 'code-reviewer' };
+      case 'review':
+        return { role: 'documenter' };
+      case 'docs':
+        return null; // Documentation is the final stage
+      default:
+        logger.warn({ stageName }, 'Unknown stage name');
+        return null;
+    }
+  }
+
+  /**
+   * Get the next workflow state based on the current stage
+   * @private
+   */
+  private getNextWorkflowState(stageName: string): WorkflowState | null {
+    switch (stageName) {
+      case 'spec':
+        return 'arch_pending';
+      case 'arch':
+        return 'tests_pending';
+      case 'tasks':
+      case 'tests':
+        return 'impl_pending';
+      case 'impl':
+        return 'review_pending';
+      case 'review':
+        return 'docs_pending';
+      case 'docs':
+        return 'complete';
+      default:
+        logger.warn({ stageName }, 'Unknown stage name for state transition');
+        return null;
+    }
   }
 
   /**
    * Create an on-demand agent if needed
-   * Used by handleArtifactCreated (to be implemented)
    * @private
    */
-  // @ts-expect-error - Used in future implementation
   private async createAgentIfNeeded(
     role: AgentRole,
     instance?: number
   ): Promise<Agent> {
-    const agentId = instance !== undefined ? `${role}-${instance}` : role;
+    const agentId = toAgentId(instance !== undefined ? `${role}-${instance}` : role);
 
     // Check if agent already exists
-    let agent = this.agents.get(agentId);
+    const agent = this.agents.get(agentId);
     if (agent) {
       return agent;
     }
 
     // Create new agent
-    agent = {
+    const newAgent: Agent = {
       id: agentId,
       role,
       sessionName: getSessionName(role, instance),
       status: 'idle',
     };
 
-    await this.sessionManager.createAgentSession(agent);
-    this.agents.set(agentId, agent);
+    await this.sessionManager.createAgentSession(newAgent);
+    this.agents.set(agentId, newAgent);
 
     logger.info({ agentId, role }, 'On-demand agent created');
 
-    return agent;
+    return newAgent;
   }
 
   /**
    * Send instruction to an agent
-   * Used by handleArtifactCreated (to be implemented)
    * @private
    */
-  // @ts-expect-error - Used in future implementation
   private async sendInstructionToAgent(
     agentId: string,
     context: InstructionContext
@@ -280,7 +387,7 @@ export class Orchestrator {
     }
 
     const instruction = generateInstructions(agent.role, context);
-    await this.agentRunner.sendInstruction(agentId, instruction);
+    await this.agentRunner.sendInstruction(agent.sessionName, instruction);
 
     // Update agent status
     agent.status = 'working';
@@ -294,10 +401,10 @@ export class Orchestrator {
 
   /**
    * Monitor agent work progress
-   * Used by handleArtifactCreated (to be implemented)
    * @private
+   * @future Will be used to monitor agent completion with timeout
    */
-  // @ts-expect-error - Used in future implementation
+  // @ts-expect-error - Reserved for future implementation
   private async monitorAgentWork(agentId: string): Promise<void> {
     const agent = this.agents.get(agentId);
     if (!agent) {
@@ -307,7 +414,7 @@ export class Orchestrator {
     try {
       // Wait for completion with timeout
       const completed = await this.agentRunner.waitForCompletion(
-        agentId,
+        agent.sessionName,
         30 * 60 * 1000 // 30 minutes timeout
       );
 
@@ -329,10 +436,8 @@ export class Orchestrator {
 
   /**
    * Handle agent error
-   * Used by handleArtifactCreated (to be implemented)
    * @private
    */
-  // @ts-expect-error - Used in future implementation
   private handleAgentError(agentId: string, error: Error): void {
     logger.error({ agentId, error }, 'Agent error occurred');
 

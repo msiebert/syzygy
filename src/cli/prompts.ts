@@ -9,9 +9,31 @@ import { createModuleLogger } from '@utils/logger';
 const logger = createModuleLogger('prompts');
 
 /**
+ * Normalize stdin state before readline operations
+ * This ensures stdin is in a clean state after Ink unmounts
+ */
+function normalizeStdin(): void {
+  // Ensure stdin is not paused
+  if (input.isPaused()) {
+    input.resume();
+  }
+
+  // Ensure raw mode is disabled for readline
+  if (input.setRawMode) {
+    input.setRawMode(false);
+  }
+
+  // Ensure stdin is referenced (keeps event loop alive)
+  input.ref();
+
+  logger.debug('Stdin normalized for readline');
+}
+
+/**
  * Ask user a yes/no question
  */
 export async function askYesNo(question: string, defaultValue = false): Promise<boolean> {
+  normalizeStdin();
   const rl = readline.createInterface({ input, output });
 
   return new Promise((resolve) => {
@@ -39,6 +61,7 @@ export async function askYesNo(question: string, defaultValue = false): Promise<
  * Ask user to input text
  */
 export async function askText(question: string, defaultValue = ''): Promise<string> {
+  normalizeStdin();
   const rl = readline.createInterface({ input, output });
 
   return new Promise((resolve) => {
@@ -63,6 +86,7 @@ export async function askChoice<T extends string>(
   choices: readonly T[],
   defaultChoice?: T
 ): Promise<T> {
+  normalizeStdin();
   const rl = readline.createInterface({ input, output });
 
   return new Promise((resolve) => {

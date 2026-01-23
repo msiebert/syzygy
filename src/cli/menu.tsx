@@ -2,7 +2,7 @@
  * Interactive main menu using Ink
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { render, Box, Text } from 'ink';
 import SelectInput from 'ink-select-input';
 import { createModuleLogger } from '@utils/logger';
@@ -73,7 +73,11 @@ export function showMenu(): Promise<MenuChoice> {
     const handleSelect = (choice: MenuChoice) => {
       // Unmount the menu
       app.unmount();
-      resolve(choice);
+
+      // Give Ink time to cleanup (microtask)
+      queueMicrotask(() => {
+        resolve(choice);
+      });
     };
 
     const app = render(<Menu onSelect={handleSelect} />);
@@ -133,11 +137,26 @@ export function showMessage(
     };
 
     const MessageWithInput = () => {
-      useState(() => {
-        process.stdin.setRawMode(true);
+      useEffect(() => {
+        const wasRaw = process.stdin.isRaw ?? false;
+
+        process.stdin.setRawMode?.(true);
         process.stdin.resume();
-        process.stdin.once('data', handleInput);
-      });
+
+        const handler = () => {
+          handleInput();
+        };
+
+        process.stdin.once('data', handler);
+
+        // Cleanup function
+        return () => {
+          process.stdin.removeListener('data', handler);
+          if (process.stdin.setRawMode) {
+            process.stdin.setRawMode(wasRaw);
+          }
+        };
+      }, []);
 
       return (
         <Box flexDirection="column">

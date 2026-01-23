@@ -196,6 +196,21 @@ function SplitScreen({
 }
 
 /**
+ * Ensure stdin is in correct state for Ink rendering
+ */
+function ensureStdinReady(): void {
+  if (process.stdin.isPaused()) {
+    process.stdin.resume();
+  }
+
+  if (process.stdin.setRawMode) {
+    process.stdin.setRawMode(false);
+  }
+
+  process.stdin.ref();
+}
+
+/**
  * Split screen controller
  */
 export class SplitScreenController {
@@ -218,6 +233,9 @@ export class SplitScreenController {
       logger.warn('Split screen already started');
       return;
     }
+
+    // Ensure stdin is ready before rendering
+    ensureStdinReady();
 
     const SplitScreenWrapper = () => {
       const [, forceUpdate] = useState({});
@@ -333,12 +351,19 @@ export function LoadingIndicator({ message }: LoadingIndicatorProps): React.JSX.
 /**
  * Show a simple loading screen
  */
-export function showLoadingScreen(message: string): { stop: () => void } {
+export function showLoadingScreen(message: string): { stop: () => Promise<void> } {
   const app = render(<LoadingIndicator message={message} />);
 
   return {
-    stop: () => {
+    stop: async () => {
       app.unmount();
+      await app.waitUntilExit(); // Wait for Ink cleanup
+
+      // Explicitly normalize stdin
+      if (process.stdin.setRawMode) {
+        process.stdin.setRawMode(false);
+      }
+      process.stdin.resume();
     },
   };
 }

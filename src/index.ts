@@ -73,7 +73,7 @@ async function handleNewFeature(): Promise<void> {
 
       await orchestrator.startWorkflow(featureName);
 
-      loading.stop();
+      await loading.stop();
 
       // Start split screen display
       splitScreen.start();
@@ -82,22 +82,50 @@ async function handleNewFeature(): Promise<void> {
       splitScreen.updateAgents(orchestrator.getActiveAgents());
       splitScreen.updateWorkflowState(orchestrator.getWorkflowState());
 
-      // Monitor workflow
-      // Note: In a real implementation, we would poll or subscribe to orchestrator events
-      // For now, this is a basic structure
+      // Monitor workflow - poll and update UI
 
-      displayInfo('Workflow started. Press Ctrl+C to stop.');
+      // Event loop control
+      let shouldExit = false;
 
-      // Keep alive (in a real implementation, this would be event-driven)
-      await new Promise((resolve) => {
-        process.on('SIGINT', () => {
-          logger.info('Received SIGINT, stopping workflow');
-          resolve(undefined);
-        });
+      // Setup SIGINT handler (non-blocking)
+      process.once('SIGINT', () => {
+        logger.info('Received SIGINT, stopping workflow');
+        shouldExit = true;
       });
+
+      // Event loop: poll and update UI
+      while (!shouldExit) {
+        // Get current state
+        const currentState = orchestrator.getWorkflowState();
+        const currentAgents = orchestrator.getActiveAgents();
+
+        // Update UI
+        splitScreen.updateWorkflowState(currentState);
+        splitScreen.updateAgents(currentAgents);
+
+        // Check for completion
+        if (currentState === 'complete') {
+          logger.info({ state: currentState }, 'Workflow completed successfully');
+          displayInfo('Workflow completed successfully!');
+          break;
+        } else if (currentState === 'error') {
+          logger.error({ state: currentState }, 'Workflow failed');
+          displayError('Workflow failed', 'See logs for details');
+          break;
+        }
+
+        // Sleep to avoid busy-waiting (500ms polling interval)
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
     } finally {
       // Cleanup
       splitScreen.stop();
+
+      // Ensure stdin is restored to normal mode
+      if (process.stdin.setRawMode) {
+        process.stdin.setRawMode(false);
+      }
+
       await orchestrator.stopWorkflow();
     }
 
