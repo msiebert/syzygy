@@ -17,6 +17,8 @@ import type { AgentRole } from '../types/agent.types.js';
  */
 export interface InstructionContext {
   featureName: string;
+  featureSlug: string;
+  initialPrompt?: string;
   specPath?: string;
   archPath?: string;
   taskPath?: string;
@@ -34,7 +36,28 @@ export interface InstructionContext {
  * a comprehensive specification document.
  */
 export function generatePMInstructions(context: InstructionContext): string {
-  const { featureName } = context;
+  const { featureName, featureSlug, initialPrompt } = context;
+
+  let initialPromptSection = '';
+  if (initialPrompt) {
+    initialPromptSection = `
+## Initial User Request
+
+The user has provided this starting description:
+
+> ${initialPrompt}
+
+## Your Approach
+
+1. **Acknowledge** their request and show you understand it
+2. **Ask clarifying questions** to fill in gaps and identify requirements
+3. **Identify edge cases** and failure modes
+4. **Define success criteria** and acceptance criteria
+5. **Get user approval** before proceeding
+
+Build upon their initial description rather than starting from zero. Your spec should expand on what they've provided.
+`;
+  }
 
   return `# Product Manager Instructions
 
@@ -43,6 +66,7 @@ You are the Product Manager in a multi-agent development workflow orchestrated b
 ## Your Role
 
 Interview the user to understand their feature request for: **${featureName}**
+${initialPromptSection}
 
 ## Responsibilities
 
@@ -56,7 +80,7 @@ Interview the user to understand their feature request for: **${featureName}**
 
 Save your specification to:
 \`\`\`
-.syzygy/stages/spec/pending/${featureName}-spec.md
+.syzygy/stages/spec/pending/${featureSlug}-spec.md
 \`\`\`
 
 ## Expected Format
@@ -121,7 +145,7 @@ Once the user approves your spec, the Architect will begin designing the impleme
  * and breaks work into developer tasks.
  */
 export function generateArchitectInstructions(context: InstructionContext): string {
-  const { featureName, specPath } = context;
+  const { featureName, featureSlug, specPath } = context;
 
   return `# Architect Instructions
 
@@ -135,7 +159,7 @@ Design the implementation architecture for: **${featureName}**
 
 Read the approved specification:
 \`\`\`
-${specPath || `.syzygy/stages/spec/done/${featureName}-spec.md`}
+${specPath || `.syzygy/stages/spec/done/${featureSlug}-spec.md`}
 \`\`\`
 
 ## Responsibilities
@@ -150,7 +174,7 @@ ${specPath || `.syzygy/stages/spec/done/${featureName}-spec.md`}
 
 ### 1. Architecture Document
 \`\`\`
-.syzygy/stages/arch/pending/${featureName}-architecture.md
+.syzygy/stages/arch/pending/${featureSlug}-architecture.md
 \`\`\`
 
 Format:
@@ -192,8 +216,8 @@ featureName: ${featureName}
 
 ### 2. Task Files (one per independent task)
 \`\`\`
-.syzygy/stages/tasks/pending/${featureName}-task-1.md
-.syzygy/stages/tasks/pending/${featureName}-task-2.md
+.syzygy/stages/tasks/pending/${featureSlug}-task-1.md
+.syzygy/stages/tasks/pending/${featureSlug}-task-2.md
 ...
 \`\`\`
 
@@ -227,8 +251,8 @@ dependencies: []  # Other task IDs this depends on
 - [ ] Tests pass
 
 ## Reference Documents
-- Spec: ${specPath || `.syzygy/stages/spec/done/${featureName}-spec.md`}
-- Architecture: .syzygy/stages/arch/done/${featureName}-architecture.md
+- Spec: ${specPath || `.syzygy/stages/spec/done/${featureSlug}-spec.md`}
+- Architecture: .syzygy/stages/arch/done/${featureSlug}-architecture.md
 \`\`\`
 
 ## Success Criteria
@@ -249,7 +273,7 @@ The Test Engineer will use your architecture to create test cases.
  * before any implementation exists (tests will fail initially).
  */
 export function generateTestEngineerInstructions(context: InstructionContext): string {
-  const { featureName, specPath, archPath } = context;
+  const { featureName, featureSlug, specPath, archPath } = context;
 
   return `# Test Engineer Instructions
 
@@ -263,8 +287,8 @@ Create comprehensive test suites for: **${featureName}**
 
 Read these documents:
 \`\`\`
-${specPath || `.syzygy/stages/spec/done/${featureName}-spec.md`}
-${archPath || `.syzygy/stages/arch/done/${featureName}-architecture.md`}
+${specPath || `.syzygy/stages/spec/done/${featureSlug}-spec.md`}
+${archPath || `.syzygy/stages/arch/done/${featureSlug}-architecture.md`}
 \`\`\`
 
 ## Responsibilities
@@ -278,7 +302,7 @@ ${archPath || `.syzygy/stages/arch/done/${featureName}-architecture.md`}
 ## Output File
 
 \`\`\`
-.syzygy/stages/tests/pending/${featureName}-tests.ts
+.syzygy/stages/tests/pending/${featureSlug}-tests.ts
 \`\`\`
 
 ## Test Requirements
@@ -347,7 +371,7 @@ Developers will implement code to make these tests pass.
  * running tests continuously until all pass.
  */
 export function generateDeveloperInstructions(context: InstructionContext): string {
-  const { featureName, taskPath, testPath, archPath, specPath, taskId } = context;
+  const { featureName, featureSlug, taskPath, testPath, archPath, specPath, taskId } = context;
 
   return `# Developer Instructions
 
@@ -361,10 +385,10 @@ Implement: **${taskId || 'assigned task'}**
 
 Read these documents in order:
 \`\`\`
-${taskPath || `.syzygy/stages/tasks/pending/${featureName}-${taskId}.md`}
-${testPath || `.syzygy/stages/tests/done/${featureName}-tests.ts`}
-${archPath || `.syzygy/stages/arch/done/${featureName}-architecture.md`}
-${specPath || `.syzygy/stages/spec/done/${featureName}-spec.md`}
+${taskPath || `.syzygy/stages/tasks/pending/${featureSlug}-${taskId}.md`}
+${testPath || `.syzygy/stages/tests/done/${featureSlug}-tests.ts`}
+${archPath || `.syzygy/stages/arch/done/${featureSlug}-architecture.md`}
+${specPath || `.syzygy/stages/spec/done/${featureSlug}-spec.md`}
 \`\`\`
 
 ## Responsibilities
@@ -389,7 +413,7 @@ ${specPath || `.syzygy/stages/spec/done/${featureName}-spec.md`}
 ## Output File
 
 \`\`\`
-.syzygy/stages/impl/pending/${featureName}-${taskId || 'task'}-implementation.md
+.syzygy/stages/impl/pending/${featureSlug}-${taskId || 'task'}-implementation.md
 \`\`\`
 
 Format:
@@ -437,7 +461,7 @@ taskId: ${taskId || 'task-1'}
 
 After completion, move the task file to done:
 \`\`\`bash
-mv ${taskPath || `.syzygy/stages/tasks/pending/${featureName}-${taskId}.md`} .syzygy/stages/tasks/done/
+mv ${taskPath || `.syzygy/stages/tasks/pending/${featureSlug}-${taskId}.md`} .syzygy/stages/tasks/done/
 \`\`\`
 
 The Code Reviewer will review your implementation.
@@ -451,7 +475,7 @@ The Code Reviewer will review your implementation.
  * and adherence to spec. Either approves or requests specific fixes.
  */
 export function generateReviewerInstructions(context: InstructionContext): string {
-  const { featureName, implPath, taskId, specPath } = context;
+  const { featureName, featureSlug, implPath, taskId, specPath } = context;
 
   return `# Code Reviewer Instructions
 
@@ -464,8 +488,8 @@ Review implementation for: **${taskId || 'assigned task'}**
 ## Input Files
 
 \`\`\`
-${implPath || `.syzygy/stages/impl/done/${featureName}-${taskId}-implementation.md`}
-${specPath || `.syzygy/stages/spec/done/${featureName}-spec.md`}
+${implPath || `.syzygy/stages/impl/done/${featureSlug}-${taskId}-implementation.md`}
+${specPath || `.syzygy/stages/spec/done/${featureSlug}-spec.md`}
 \`\`\`
 
 Read the implementation summary to see which files were modified, then review those files.
@@ -486,7 +510,7 @@ Look for:
 
 Create approval file:
 \`\`\`
-.syzygy/stages/review/pending/${featureName}-${taskId || 'task'}-review.md
+.syzygy/stages/review/pending/${featureSlug}-${taskId || 'task'}-review.md
 \`\`\`
 
 Format:
@@ -521,7 +545,7 @@ Implementation meets quality standards and spec requirements.
 
 Create fix task:
 \`\`\`
-.syzygy/stages/tasks/pending/${featureName}-${taskId || 'task'}-fixes.md
+.syzygy/stages/tasks/pending/${featureSlug}-${taskId || 'task'}-fixes.md
 \`\`\`
 
 Format:
@@ -572,7 +596,7 @@ If approved, the Documenter will update project docs. If fixes requested, a Deve
  * Documenter updates all project documentation based on completed work.
  */
 export function generateDocumenterInstructions(context: InstructionContext): string {
-  const { featureName, specPath, archPath } = context;
+  const { featureName, featureSlug, specPath, archPath } = context;
 
   return `# Documenter Instructions
 
@@ -586,10 +610,10 @@ Update project documentation for completed feature: **${featureName}**
 
 Review all workflow artifacts:
 \`\`\`
-Spec: ${specPath || `.syzygy/stages/spec/done/${featureName}-spec.md`}
-Architecture: ${archPath || `.syzygy/stages/arch/done/${featureName}-architecture.md`}
-Implementations: .syzygy/stages/impl/done/${featureName}-*
-Reviews: .syzygy/stages/review/done/${featureName}-*
+Spec: ${specPath || `.syzygy/stages/spec/done/${featureSlug}-spec.md`}
+Architecture: ${archPath || `.syzygy/stages/arch/done/${featureSlug}-architecture.md`}
+Implementations: .syzygy/stages/impl/done/${featureSlug}-*
+Reviews: .syzygy/stages/review/done/${featureSlug}-*
 \`\`\`
 
 ## Responsibilities
@@ -612,7 +636,7 @@ Check and update these files as needed:
 ## Output File
 
 \`\`\`
-.syzygy/stages/docs/pending/${featureName}-documentation.md
+.syzygy/stages/docs/pending/${featureSlug}-documentation.md
 \`\`\`
 
 Format:

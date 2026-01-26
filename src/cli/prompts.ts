@@ -5,6 +5,7 @@
 import readline from 'node:readline';
 import { stdin as input, stdout as output } from 'node:process';
 import { createModuleLogger } from '@utils/logger';
+import { validateFeatureName, validateInitialPrompt } from '@utils/sanitize';
 
 const logger = createModuleLogger('prompts');
 
@@ -224,17 +225,66 @@ export async function askSettings(
  * Ask for feature name
  */
 export async function askFeatureName(): Promise<string> {
-  let featureName = '';
-
-  while (!featureName) {
-    featureName = await askText('What feature would you like to build?');
+  while (true) {
+    const featureName = await askText('What feature would you like to build?');
 
     if (!featureName) {
       console.log('Feature name cannot be empty. Please try again.');
+      continue;
     }
-  }
 
-  return featureName;
+    const validation = validateFeatureName(featureName);
+    if (!validation.valid) {
+      console.log(`Invalid feature name: ${validation.error}`);
+      console.log('Please use 3-100 characters (letters, numbers, spaces, hyphens, special chars).');
+      continue;
+    }
+
+    return featureName;
+  }
+}
+
+/**
+ * Ask for initial prompt (detailed description)
+ */
+export async function askInitialPrompt(): Promise<string> {
+  console.log('\nDescribe what you want to build (this gives the PM a starting point)');
+  console.log('Example: "I want JWT-based authentication with OAuth support for Google and GitHub"\n');
+
+  while (true) {
+    const prompt = await askText('Feature description');
+
+    if (!prompt) {
+      console.log('Description cannot be empty. Please try again.');
+      continue;
+    }
+
+    const validation = validateInitialPrompt(prompt);
+    if (!validation.valid) {
+      console.log(`Invalid description: ${validation.error}`);
+      continue;
+    }
+
+    return prompt;
+  }
+}
+
+/**
+ * Ask for both feature name and initial description
+ */
+export async function askFeatureInfo(): Promise<{ featureName: string; initialPrompt: string }> {
+  const featureName = await askFeatureName();
+  const initialPrompt = await askInitialPrompt();
+
+  // Confirmation
+  console.log('\n' + '='.repeat(60));
+  console.log('Feature Setup Complete');
+  console.log('='.repeat(60));
+  console.log(`Name: ${featureName}`);
+  console.log(`Description: ${initialPrompt}`);
+  console.log('='.repeat(60) + '\n');
+
+  return { featureName, initialPrompt };
 }
 
 /**

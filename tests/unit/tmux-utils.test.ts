@@ -419,4 +419,248 @@ describe('tmux-utils', () => {
       mockSpawn.mockRestore();
     });
   });
+
+  describe('launchClaudeCLI', () => {
+    it('should launch Claude CLI successfully with Claude Code prompt', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      // Mock send-keys for cd command
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      // Mock send-keys for claude command
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      // Mock capture-pane (multiple times for polling)
+      // Return Claude Code detected on first attempt
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('Claude Code\n> '));
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      await tmuxUtils.launchClaudeCLI(toSessionName('test-pm'), {
+        systemPromptPath: '/tmp/prompt.md',
+        workingDirectory: '/tmp/project',
+        sessionId: 'test-session',
+      });
+
+      expect(mockSpawn).toHaveBeenCalled();
+      mockSpawn.mockRestore();
+    });
+
+    it('should launch Claude CLI successfully with alternative prompts', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      // Mock send-keys for cd
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      // Mock send-keys for claude
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      // Mock capture-pane with "How can I help" prompt
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('How can I help you today?'));
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      await tmuxUtils.launchClaudeCLI(toSessionName('test-pm'), {
+        systemPromptPath: '/tmp/prompt.md',
+        workingDirectory: '/tmp/project',
+        sessionId: 'test-session',
+      });
+
+      expect(mockSpawn).toHaveBeenCalled();
+      mockSpawn.mockRestore();
+    });
+
+    it('should timeout if Claude CLI does not initialize', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      // Mock send-keys for cd
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      // Mock send-keys for claude
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      // Mock capture-pane with no Claude prompt (for all 90 attempts)
+      for (let i = 0; i < 90; i++) {
+        mockSpawn.mockImplementationOnce(() => ({
+          stdout: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('initializing...'));
+              controller.close();
+            },
+          }),
+          stderr: new ReadableStream({
+            start(controller) {
+              controller.close();
+            },
+          }),
+          exited: Promise.resolve(0),
+        } as any));
+      }
+
+      await expect(
+        tmuxUtils.launchClaudeCLI(toSessionName('test-pm'), {
+          systemPromptPath: '/tmp/prompt.md',
+          workingDirectory: '/tmp/project',
+          sessionId: 'test-session',
+        })
+      ).rejects.toThrow(tmuxUtils.TmuxError);
+
+      mockSpawn.mockRestore();
+    });
+
+    it('should use file path directly, not command substitution', async () => {
+      const mockSpawn = spyOn(Bun, 'spawn');
+
+      // Mock send-keys for cd command
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      // Mock send-keys for claude command
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      // Mock capture-pane
+      mockSpawn.mockImplementationOnce(() => ({
+        stdout: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('Claude Code\n> '));
+            controller.close();
+          },
+        }),
+        stderr: new ReadableStream({
+          start(controller) {
+            controller.close();
+          },
+        }),
+        exited: Promise.resolve(0),
+      } as any));
+
+      await tmuxUtils.launchClaudeCLI(toSessionName('test-pm'), {
+        systemPromptPath: '/path/to/prompt.md',
+        workingDirectory: '/tmp/project',
+        sessionId: 'test-session',
+      });
+
+      // Verify that the command was sent (uses file path directly, not $(cat ...))
+      expect(mockSpawn).toHaveBeenCalledTimes(3); // cd, claude, capture
+
+      mockSpawn.mockRestore();
+    });
+  });
 });

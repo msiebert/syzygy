@@ -18,6 +18,8 @@ import type { AgentRole } from '../../src/types/agent.types.js';
 describe('agent-instructions', () => {
   const baseContext: InstructionContext = {
     featureName: 'test-feature',
+    featureSlug: 'test-feature',
+    initialPrompt: 'This is a test feature description provided by the user',
     specPath: '.syzygy/stages/spec/done/test-feature-spec.md',
     archPath: '.syzygy/stages/arch/done/test-feature-architecture.md',
     taskPath: '.syzygy/stages/tasks/pending/test-feature-task-1.md',
@@ -66,6 +68,21 @@ describe('agent-instructions', () => {
       expect(instructions).toContain('Acceptance Criteria');
       expect(instructions).toContain('Edge Cases');
       expect(instructions).toContain('Success Metrics');
+    });
+
+    it('should include initial prompt when provided', () => {
+      const instructions = generatePMInstructions(baseContext);
+      expect(instructions).toContain('This is a test feature description provided by the user');
+      expect(instructions).toContain('Initial User Request');
+    });
+
+    it('should not include initial prompt section when not provided', () => {
+      const contextWithoutPrompt: InstructionContext = {
+        featureName: 'test-feature',
+        featureSlug: 'test-feature',
+      };
+      const instructions = generatePMInstructions(contextWithoutPrompt);
+      expect(instructions).not.toContain('Initial User Request');
     });
   });
 
@@ -372,6 +389,7 @@ describe('agent-instructions', () => {
     it('should handle minimal context for PM', () => {
       const minimalContext: InstructionContext = {
         featureName: 'minimal-feature',
+        featureSlug: 'minimal-feature',
       };
 
       const instructions = generatePMInstructions(minimalContext);
@@ -381,6 +399,7 @@ describe('agent-instructions', () => {
     it('should use provided paths when available', () => {
       const customContext: InstructionContext = {
         featureName: 'custom',
+        featureSlug: 'custom',
         specPath: 'custom/path/spec.md',
         archPath: 'custom/path/arch.md',
       };
@@ -392,6 +411,7 @@ describe('agent-instructions', () => {
     it('should generate default paths when not provided', () => {
       const minimalContext: InstructionContext = {
         featureName: 'auto-path',
+        featureSlug: 'auto-path',
       };
 
       const instructions = generateArchitectInstructions(minimalContext);
@@ -401,6 +421,7 @@ describe('agent-instructions', () => {
     it('should handle task ID in developer instructions', () => {
       const context: InstructionContext = {
         featureName: 'test',
+        featureSlug: 'test',
         taskId: 'custom-task-123',
       };
 

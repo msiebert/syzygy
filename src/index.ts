@@ -9,7 +9,7 @@ import { version } from '../package.json';
 import { Orchestrator } from './core/orchestrator.js';
 import { showMenu, showMessage } from './cli/menu.js';
 import {
-  askFeatureName,
+  askFeatureInfo,
   askSettings,
   displayCompletionSummary,
   displayError,
@@ -52,8 +52,8 @@ function displayBanner(): void {
  */
 async function handleNewFeature(): Promise<void> {
   try {
-    // Ask for feature name
-    const featureName = await askFeatureName();
+    // Ask for feature name and description
+    const { featureName, initialPrompt } = await askFeatureInfo();
 
     displayInfo(`Starting workflow for: ${featureName}`);
 
@@ -71,7 +71,7 @@ async function handleNewFeature(): Promise<void> {
       // Start workflow
       const loading = showLoadingScreen('Initializing workspace and agents...');
 
-      await orchestrator.startWorkflow(featureName);
+      await orchestrator.startWorkflow(featureName, initialPrompt);
 
       await loading.stop();
 

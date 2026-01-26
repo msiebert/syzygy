@@ -15,6 +15,8 @@ export type WorkflowState =
 
 export interface WorkflowContext {
   featureName: string;
+  featureSlug: string;
+  initialPrompt: string;
   state: WorkflowState;
   startedAt: Date;
   completedAt?: Date;

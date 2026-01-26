@@ -28,9 +28,13 @@ const mockWorkflowEngine = {
   getCurrentState: mock(() => 'idle' as const),
   getContext: mock(() => ({
     featureName: 'test-feature',
+    initialPrompt: 'Test description',
     state: 'idle' as const,
     startedAt: new Date(),
   })),
+  getFeatureName: mock(() => 'test-feature'),
+  getFeatureSlug: mock(() => 'test-feature'),
+  getInitialPrompt: mock(() => 'Test description'),
   canTransition: mock(() => true),
   transitionTo: mock(() => {}),
   transitionToError: mock(() => {}),
@@ -141,7 +145,7 @@ describe('Orchestrator', () => {
     it('should initialize workspace and create core agents', async () => {
       orchestrator = new Orchestrator();
 
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       // Should initialize stages
       expect(mockStageManager.initializeStages).toHaveBeenCalled();
@@ -156,7 +160,7 @@ describe('Orchestrator', () => {
     it('should transition to spec_pending state', async () => {
       orchestrator = new Orchestrator();
 
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       expect(mockWorkflowEngine.transitionTo).toHaveBeenCalledWith('spec_pending');
     });
@@ -164,7 +168,7 @@ describe('Orchestrator', () => {
     it('should send instruction to Product Manager', async () => {
       orchestrator = new Orchestrator();
 
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       expect(mockAgentRunner.sendInstruction).toHaveBeenCalled();
       const calls = mockAgentRunner.sendInstruction.mock.calls as unknown as [string, string][];
@@ -178,7 +182,7 @@ describe('Orchestrator', () => {
     it('should setup file monitoring for all stages', async () => {
       orchestrator = new Orchestrator();
 
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       // Should watch all 7 stage pending directories
       expect(mockFileMonitor.addWatchPath).toHaveBeenCalledTimes(7);
@@ -187,9 +191,9 @@ describe('Orchestrator', () => {
     it('should throw error if workflow is already running', async () => {
       orchestrator = new Orchestrator();
 
-      await orchestrator.startWorkflow('test-feature-1');
+      await orchestrator.startWorkflow('test-feature-1', 'Test description 1');
 
-      await expect(orchestrator.startWorkflow('test-feature-2')).rejects.toThrow(
+      await expect(orchestrator.startWorkflow('test-feature-2', 'Test description 2')).rejects.toThrow(
         'Workflow is already running'
       );
     });
@@ -200,7 +204,7 @@ describe('Orchestrator', () => {
       // Mock initialization failure
       mockStageManager.initializeStages.mockRejectedValueOnce(new Error('Init failed'));
 
-      await expect(orchestrator.startWorkflow('test-feature')).rejects.toThrow('Init failed');
+      await expect(orchestrator.startWorkflow('test-feature', 'Test description')).rejects.toThrow('Init failed');
 
       // Should cleanup sessions
       expect(mockSessionManager.cleanupAllSessions).toHaveBeenCalled();
@@ -210,7 +214,7 @@ describe('Orchestrator', () => {
   describe('stopWorkflow', () => {
     it('should stop file monitor', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       await orchestrator.stopWorkflow();
 
@@ -219,7 +223,7 @@ describe('Orchestrator', () => {
 
     it('should cleanup all sessions', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       await orchestrator.stopWorkflow();
 
@@ -228,7 +232,7 @@ describe('Orchestrator', () => {
 
     it('should clear agents list', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       expect(orchestrator.getActiveAgents().length).toBeGreaterThan(0);
 
@@ -249,7 +253,7 @@ describe('Orchestrator', () => {
       // @ts-expect-error - mock return type mismatch
       mockWorkflowEngine.getCurrentState.mockReturnValueOnce('spec_pending');
 
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       expect(orchestrator.getWorkflowState()).toBe('spec_pending');
     });
@@ -263,7 +267,7 @@ describe('Orchestrator', () => {
 
     it('should return core agents after startup', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       const agents = orchestrator.getActiveAgents();
       expect(agents.length).toBeGreaterThan(0);
@@ -283,7 +287,7 @@ describe('Orchestrator', () => {
 
     it('should return agent by ID after creation', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       const pmAgent = orchestrator.getAgent('product-manager');
       expect(pmAgent).toBeDefined();
@@ -294,7 +298,7 @@ describe('Orchestrator', () => {
   describe('agent lifecycle', () => {
     it('should create PM agent with correct session name', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       const pmAgent = orchestrator.getAgent('product-manager');
       expect(pmAgent?.sessionName).toBe(toSessionName('syzygy-pm'));
@@ -302,7 +306,7 @@ describe('Orchestrator', () => {
 
     it('should create Architect agent with correct session name', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       const archAgent = orchestrator.getAgent('architect');
       expect(archAgent?.sessionName).toBe(toSessionName('syzygy-architect'));
@@ -310,7 +314,7 @@ describe('Orchestrator', () => {
 
     it('should set PM agent status to working after instruction sent', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       const pmAgent = orchestrator.getAgent('product-manager');
       expect(pmAgent?.status).toBe('working');
@@ -320,7 +324,7 @@ describe('Orchestrator', () => {
   describe('file monitoring setup', () => {
     it('should watch spec/pending directory', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       const calls = mockFileMonitor.addWatchPath.mock.calls as unknown as [string][];
       const specPendingCall = calls.find(([path]) => path && path.includes('spec/pending'));
@@ -329,7 +333,7 @@ describe('Orchestrator', () => {
 
     it('should watch all stage pending directories', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       const stages = ['spec', 'arch', 'tasks', 'tests', 'impl', 'review', 'docs'];
       const calls = (mockFileMonitor.addWatchPath.mock.calls as unknown as [string][]).map(([path]) => path);
@@ -342,7 +346,7 @@ describe('Orchestrator', () => {
 
     it('should listen for artifact:created events', async () => {
       orchestrator = new Orchestrator();
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       expect(mockFileMonitor.on).toHaveBeenCalledWith('artifact:created', expect.any(Function));
     });
@@ -356,7 +360,7 @@ describe('Orchestrator', () => {
         new Error('Session creation failed')
       );
 
-      await expect(orchestrator.startWorkflow('test-feature')).rejects.toThrow();
+      await expect(orchestrator.startWorkflow('test-feature', 'Test description')).rejects.toThrow();
     });
 
     it('should cleanup on error during startup', async () => {
@@ -366,7 +370,7 @@ describe('Orchestrator', () => {
         throw new Error('Transition failed');
       });
 
-      await expect(orchestrator.startWorkflow('test-feature')).rejects.toThrow();
+      await expect(orchestrator.startWorkflow('test-feature', 'Test description')).rejects.toThrow();
 
       // Should attempt cleanup
       expect(mockSessionManager.cleanupAllSessions).toHaveBeenCalled();
@@ -376,7 +380,7 @@ describe('Orchestrator', () => {
   describe('configuration', () => {
     it('should use custom workspace root', async () => {
       orchestrator = new Orchestrator({ workspaceRoot: '/custom/path' });
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       const calls = mockStageManager.initializeStages.mock.calls as unknown as [string][];
       expect(calls.length).toBeGreaterThan(0);
@@ -388,7 +392,7 @@ describe('Orchestrator', () => {
 
     it('should pass workspace root to stage manager', async () => {
       orchestrator = new Orchestrator({ workspaceRoot: '/test/root' });
-      await orchestrator.startWorkflow('test-feature');
+      await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       expect(mockStageManager.initializeStages).toHaveBeenCalledWith(
         expect.stringContaining('/test/root/.syzygy')

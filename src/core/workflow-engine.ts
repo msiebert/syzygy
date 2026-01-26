@@ -12,6 +12,7 @@ import type {
 } from '../types/workflow.types.js';
 import { WorkflowEngineError } from '../types/message.types.js';
 import { createModuleLogger } from '@utils/logger';
+import { createSlug, sanitizeFeatureName } from '@utils/sanitize';
 
 const logger = createModuleLogger('workflow-engine');
 
@@ -36,14 +37,19 @@ export class WorkflowEngine {
   private context: WorkflowContext;
   private listeners: Map<WorkflowEventType, EventListener[]> = new Map();
 
-  constructor(featureName: string) {
+  constructor(featureName: string, initialPrompt: string) {
+    const sanitized = sanitizeFeatureName(featureName);
+    const slug = createSlug(featureName);
+
     this.context = {
-      featureName,
+      featureName: sanitized,
+      featureSlug: slug,
+      initialPrompt,
       state: 'idle',
       startedAt: new Date(),
     };
 
-    logger.info({ featureName }, 'Workflow engine initialized');
+    logger.info({ featureName, slug, initialPrompt }, 'Workflow engine initialized');
   }
 
   /**
@@ -65,6 +71,20 @@ export class WorkflowEngine {
    */
   getFeatureName(): string {
     return this.context.featureName;
+  }
+
+  /**
+   * Get feature slug (safe identifier for use in files/session IDs)
+   */
+  getFeatureSlug(): string {
+    return this.context.featureSlug;
+  }
+
+  /**
+   * Get initial prompt (user's description of the feature)
+   */
+  getInitialPrompt(): string {
+    return this.context.initialPrompt;
   }
 
   /**
@@ -225,6 +245,8 @@ export class WorkflowEngine {
 
     this.context = {
       featureName: this.context.featureName,
+      featureSlug: this.context.featureSlug,
+      initialPrompt: this.context.initialPrompt,
       state: 'idle',
       startedAt: new Date(),
     };

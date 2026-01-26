@@ -3,7 +3,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { render, Box, Text } from 'ink';
+import { render, Box, Text, useInput } from 'ink';
 import Spinner from 'ink-spinner';
 import type { Agent, AgentStatus } from '../types/agent.types.js';
 import type { WorkflowState } from '../types/workflow.types.js';
@@ -129,6 +129,10 @@ function SyzygyStatus({ workflowState, agents, featureName }: SyzygyStatusProps)
  */
 interface PMChatProps {
   messages: ChatMessage[];
+  isInteractive: boolean;
+  inputBuffer?: string;
+  onUserInput?: (char: string) => void;
+  onExitInteractive?: () => void;
 }
 
 export interface ChatMessage {
@@ -137,13 +141,48 @@ export interface ChatMessage {
   timestamp: Date;
 }
 
-function PMChat({ messages }: PMChatProps): React.JSX.Element {
+function InteractivePMChat({
+  messages,
+  isInteractive,
+  inputBuffer = '',
+  onUserInput,
+  onExitInteractive
+}: PMChatProps): React.JSX.Element {
+  // Capture keyboard input when in interactive mode
+  useInput((input, key) => {
+    if (!isInteractive) return;
+
+    // Exit interactive mode on Escape or Ctrl+C
+    if (key.escape || (key.ctrl && input === 'c')) {
+      onExitInteractive?.();
+      return;
+    }
+
+    // Handle Enter
+    if (key.return) {
+      onUserInput?.('\n');
+      return;
+    }
+
+    // Handle Backspace/Delete
+    if (key.backspace || key.delete) {
+      onUserInput?.('\x7f'); // DEL character
+      return;
+    }
+
+    // Regular character
+    onUserInput?.(input);
+  });
+
   return (
     <Box flexDirection="column" padding={1} borderStyle="round" borderColor="green">
       <Box marginBottom={1}>
         <Text bold color="green">
           Product Manager Chat
         </Text>
+        {isInteractive && (
+          <Text dimColor> (Interactive Mode - Press Esc to exit)</Text>
+        )}
       </Box>
 
       <Box flexDirection="column">
@@ -159,6 +198,14 @@ function PMChat({ messages }: PMChatProps): React.JSX.Element {
             </Box>
           ))
         )}
+
+        {/* Show current input buffer when typing */}
+        {isInteractive && inputBuffer && (
+          <Box marginTop={0.5}>
+            <Text color="cyan">You: </Text>
+            <Text>{inputBuffer}_</Text>
+          </Box>
+        )}
       </Box>
     </Box>
   );
@@ -172,6 +219,10 @@ interface SplitScreenProps {
   workflowState: WorkflowState;
   agents: AgentStatusDisplay[];
   chatMessages: ChatMessage[];
+  isInteractive: boolean;
+  inputBuffer: string;
+  onUserInput: (char: string) => void;
+  onExitInteractive: () => void;
 }
 
 function SplitScreen({
@@ -179,12 +230,22 @@ function SplitScreen({
   workflowState,
   agents,
   chatMessages,
+  isInteractive,
+  inputBuffer,
+  onUserInput,
+  onExitInteractive,
 }: SplitScreenProps): React.JSX.Element {
   return (
     <Box flexDirection="column" height="100%">
       {/* PM Chat - Top Half */}
       <Box flexGrow={1}>
-        <PMChat messages={chatMessages} />
+        <InteractivePMChat
+          messages={chatMessages}
+          isInteractive={isInteractive}
+          inputBuffer={inputBuffer}
+          onUserInput={onUserInput}
+          onExitInteractive={onExitInteractive}
+        />
       </Box>
 
       {/* Syzygy Status - Bottom Half */}
@@ -220,6 +281,10 @@ export class SplitScreenController {
   private agents: AgentStatusDisplay[] = [];
   private chatMessages: ChatMessage[] = [];
   private updateCallback: (() => void) | undefined;
+  private isInteractiveMode = false;
+  private inputBuffer = '';
+  private inputCallback: ((char: string) => void) | undefined;
+  private exitCallback: (() => void) | undefined;
 
   constructor(featureName: string) {
     this.featureName = featureName;
@@ -253,6 +318,10 @@ export class SplitScreenController {
           workflowState={this.workflowState}
           agents={this.agents}
           chatMessages={this.chatMessages}
+          isInteractive={this.isInteractiveMode}
+          inputBuffer={this.inputBuffer}
+          onUserInput={(char) => this.handleUserInput(char)}
+          onExitInteractive={() => this.handleExitInteractive()}
         />
       );
     };
@@ -326,6 +395,67 @@ export class SplitScreenController {
   private triggerUpdate(): void {
     if (this.updateCallback) {
       this.updateCallback();
+    }
+  }
+
+  /**
+   * Enable interactive mode for PM chat
+   */
+  enableInteractiveMode(onInput: (char: string) => void, onExit?: () => void): void {
+    logger.info('Enabling interactive mode');
+    this.isInteractiveMode = true;
+    this.inputCallback = onInput;
+    this.exitCallback = onExit;
+    this.inputBuffer = '';
+    this.triggerUpdate();
+  }
+
+  /**
+   * Disable interactive mode
+   */
+  disableInteractiveMode(): void {
+    logger.info('Disabling interactive mode');
+    this.isInteractiveMode = false;
+    this.inputCallback = undefined;
+    this.exitCallback = undefined;
+    this.inputBuffer = '';
+    this.triggerUpdate();
+  }
+
+  /**
+   * Handle user input from Ink
+   */
+  private handleUserInput(char: string): void {
+    // Update local buffer for display
+    if (char === '\n') {
+      // Clear buffer on Enter
+      this.inputBuffer = '';
+    } else if (char === '\x7f') {
+      // Backspace - remove last character
+      this.inputBuffer = this.inputBuffer.slice(0, -1);
+    } else {
+      // Add character to buffer
+      this.inputBuffer += char;
+    }
+
+    // Forward to callback
+    if (this.inputCallback) {
+      this.inputCallback(char);
+    }
+
+    this.triggerUpdate();
+  }
+
+  /**
+   * Handle exit from interactive mode
+   */
+  private handleExitInteractive(): void {
+    logger.info('User exited interactive mode');
+    this.disableInteractiveMode();
+
+    // Signal orchestrator that user exited PM interaction
+    if (this.exitCallback) {
+      this.exitCallback();
     }
   }
 }

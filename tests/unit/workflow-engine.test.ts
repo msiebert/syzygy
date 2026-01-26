@@ -10,9 +10,10 @@ import type { WorkflowEvent, WorkflowState } from '../../src/types/workflow.type
 describe('WorkflowEngine', () => {
   let engine: WorkflowEngine;
   const featureName = 'test-feature';
+  const initialPrompt = 'This is a test feature description';
 
   beforeEach(() => {
-    engine = new WorkflowEngine(featureName);
+    engine = new WorkflowEngine(featureName, initialPrompt);
   });
 
   describe('initialization', () => {
@@ -23,6 +24,11 @@ describe('WorkflowEngine', () => {
     it('should store feature name in context', () => {
       const context = engine.getContext();
       expect(context.featureName).toBe(featureName);
+    });
+
+    it('should store initial prompt in context', () => {
+      const context = engine.getContext();
+      expect(context.initialPrompt).toBe(initialPrompt);
     });
 
     it('should set startedAt timestamp', () => {
@@ -57,6 +63,12 @@ describe('WorkflowEngine', () => {
 
       expect(context1).not.toBe(context2);
       expect(context1).toEqual(context2);
+    });
+  });
+
+  describe('getInitialPrompt', () => {
+    it('should return the initial prompt', () => {
+      expect(engine.getInitialPrompt()).toBe(initialPrompt);
     });
   });
 
@@ -231,7 +243,7 @@ describe('WorkflowEngine', () => {
       ];
 
       for (const state of states) {
-        const testEngine = new WorkflowEngine(`test-${state}`);
+        const testEngine = new WorkflowEngine(`test-${state}`, 'Test prompt');
 
         if (state !== 'idle') {
           // Transition to the test state first
@@ -335,11 +347,12 @@ describe('WorkflowEngine', () => {
       expect(engine.getCurrentState()).toBe('idle');
     });
 
-    it('should preserve feature name', () => {
+    it('should preserve feature name and initial prompt', () => {
       engine.reset();
 
       const context = engine.getContext();
       expect(context.featureName).toBe(featureName);
+      expect(context.initialPrompt).toBe(initialPrompt);
     });
 
     it('should clear error', () => {

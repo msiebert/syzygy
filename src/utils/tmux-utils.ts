@@ -6,6 +6,7 @@ import type { TmuxSession } from '../types/message.types.js';
 import type { SessionName } from '../types/agent.types.js';
 import { toAgentId, toSessionName } from '../types/agent.types.js';
 import { createModuleLogger } from '@utils/logger';
+import { escapeShellArg } from '@utils/sanitize';
 
 const logger = createModuleLogger('tmux-utils');
 
@@ -240,6 +241,140 @@ export async function sessionExists(sessionName: SessionName): Promise<boolean> 
       return false;
     }
     logger.error({ sessionName, error }, 'Failed to check session existence');
+    throw error;
+  }
+}
+
+/**
+ * Send raw keys to tmux session without automatic Enter
+ */
+export async function sendKeysRaw(
+  sessionName: SessionName,
+  keys: string
+): Promise<void> {
+  logger.debug({ sessionName, keys }, 'Sending raw keys to tmux session');
+
+  try {
+    await execTmux([
+      'send-keys',
+      '-t', sessionName,
+      '-l', // literal flag - send exact characters
+      keys,
+    ]);
+    logger.debug({ sessionName }, 'Raw keys sent successfully');
+  } catch (error) {
+    logger.error({ sessionName, error }, 'Failed to send raw keys');
+    throw error;
+  }
+}
+
+/**
+ * Send special key to tmux session
+ */
+export async function sendSpecialKey(
+  sessionName: SessionName,
+  key: 'Enter' | 'BSpace' | 'C-c' | 'Escape'
+): Promise<void> {
+  logger.debug({ sessionName, key }, 'Sending special key to tmux session');
+
+  try {
+    await execTmux([
+      'send-keys',
+      '-t', sessionName,
+      key,
+    ]);
+    logger.debug({ sessionName, key }, 'Special key sent successfully');
+  } catch (error) {
+    logger.error({ sessionName, key, error }, 'Failed to send special key');
+    throw error;
+  }
+}
+
+/**
+ * Launch Claude Code CLI in a tmux session
+ */
+export async function launchClaudeCLI(
+  sessionName: SessionName,
+  options: {
+    systemPromptPath: string;
+    workingDirectory: string;
+    sessionId: string;
+  }
+): Promise<void> {
+  logger.info({ sessionName, options }, 'Launching Claude Code CLI in tmux session');
+
+  try {
+    // Change to working directory
+    await sendKeys(sessionName, `cd ${escapeShellArg(options.workingDirectory)}`);
+
+    // Wait longer for cd to complete and verify
+    await new Promise(resolve => setTimeout(resolve, 500));
+
+    // Launch Claude CLI with system prompt (pass file path directly, not via command substitution)
+    const claudeCommand = `claude --system-prompt ${escapeShellArg(options.systemPromptPath)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+    await sendKeys(sessionName, claudeCommand);
+
+    // Wait for Claude to initialize (poll for prompt)
+    logger.debug({ sessionName }, 'Waiting for Claude CLI to initialize');
+    const maxAttempts = 90; // Increased from 30 to 90 seconds
+    let initialized = false;
+
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      const output = await capturePane(sessionName);
+
+      // Check for Claude prompt indicators (expanded patterns)
+      if (
+        output.includes('Claude Code') ||
+        output.includes('How can I help') ||
+        output.includes('claude>') ||
+        output.includes('What would you like to work on?') ||
+        output.match(/^>\s*$/m) // Claude's ready prompt
+      ) {
+        initialized = true;
+        logger.info(
+          { sessionName, attempt: i + 1, elapsedSeconds: i + 1 },
+          'Claude CLI initialized successfully'
+        );
+        break;
+      }
+
+      // Log progress every 15 seconds
+      if ((i + 1) % 15 === 0) {
+        logger.info(
+          { sessionName, elapsedSeconds: i + 1 },
+          'Still waiting for Claude CLI to initialize...'
+        );
+      }
+    }
+
+    if (!initialized) {
+      // Capture full diagnostic output
+      const diagnosticOutput = await capturePane(sessionName);
+
+      logger.error(
+        {
+          sessionName,
+          timeout: maxAttempts,
+          systemPromptPath: options.systemPromptPath,
+          workingDirectory: options.workingDirectory,
+          sessionId: options.sessionId,
+          claudeCommand,
+          paneOutput: diagnosticOutput,
+        },
+        'Claude CLI initialization timeout - full diagnostics'
+      );
+
+      throw new TmuxError(
+        'Claude CLI failed to initialize within timeout',
+        claudeCommand,
+        undefined,
+        `Timeout after ${maxAttempts}s. Last output: ${diagnosticOutput.slice(-500)}`
+      );
+    }
+  } catch (error) {
+    logger.error({ sessionName, error }, 'Failed to launch Claude CLI');
     throw error;
   }
 }

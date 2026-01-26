@@ -11,6 +11,8 @@ import { WorkflowEngine } from './workflow-engine.js';
 import { FileMonitor } from './file-monitor.js';
 import { AgentRunner } from './agent-runner.js';
 import { StageManager } from '../stages/stage-manager.js';
+import { PMMonitor } from './pm-monitor.js';
+import { SplitScreenController } from '../cli/split-screen.js';
 import {
   getAlwaysRunningAgents,
   getSessionName,
@@ -20,6 +22,7 @@ import {
   type InstructionContext,
 } from '../agents/agent-instructions.js';
 import { createModuleLogger } from '@utils/logger';
+import { sendKeysRaw, sendSpecialKey } from '../utils/tmux-utils.js';
 import path from 'path';
 
 const logger = createModuleLogger('orchestrator');
@@ -42,6 +45,9 @@ export class Orchestrator {
   private stageManager: StageManager;
   private agents: Map<string, Agent> = new Map();
   private isRunning = false;
+  private pmMonitor?: PMMonitor;
+  private splitScreen?: SplitScreenController;
+  private pmTimeout: NodeJS.Timeout | undefined;
 
   constructor(config: OrchestratorConfig = {}) {
     this.config = {
@@ -62,16 +68,16 @@ export class Orchestrator {
   /**
    * Start a new workflow
    */
-  async startWorkflow(featureName: string): Promise<void> {
+  async startWorkflow(featureName: string, initialPrompt: string): Promise<void> {
     if (this.isRunning) {
       throw new Error('Workflow is already running');
     }
 
-    logger.info({ featureName }, 'Starting workflow');
+    logger.info({ featureName, initialPrompt }, 'Starting workflow');
 
     try {
       // Initialize workflow engine
-      this.workflowEngine = new WorkflowEngine(featureName);
+      this.workflowEngine = new WorkflowEngine(featureName, initialPrompt);
 
       // Initialize workspace (create stage directories)
       const workspaceRoot = path.join(this.config.workspaceRoot, '.syzygy');
@@ -85,11 +91,56 @@ export class Orchestrator {
       await this.createCoreAgents();
       logger.info('Core agents created');
 
+      // Get PM agent
+      const pmAgent = this.agents.get('product-manager');
+      if (!pmAgent) {
+        throw new Error('PM agent not found');
+      }
+
+      // Create split screen UI
+      this.splitScreen = new SplitScreenController(featureName);
+      this.splitScreen.start();
+      logger.info('Split screen UI started');
+
+      // Update initial agent statuses in UI
+      this.splitScreen.updateAgents(Array.from(this.agents.values()));
+      this.splitScreen.updateWorkflowState('spec_pending');
+
+      // Create PM monitor
+      this.pmMonitor = new PMMonitor(pmAgent.sessionName, {
+        pollInterval: 200, // 200ms for low latency
+        featureName,
+        featureSlug: this.workflowEngine.getFeatureSlug(),
+        onNewMessage: (message) => {
+          this.splitScreen?.addChatMessage('pm', message);
+        },
+        onSpecComplete: () => {
+          void this.handleSpecComplete();
+        },
+      });
+
+      // Start PM monitoring
+      await this.pmMonitor.startPolling();
+      logger.info('PM monitoring started');
+
+      // Enable interactive mode in split screen
+      this.splitScreen.enableInteractiveMode(
+        (char) => {
+          void this.forwardInputToPM(char);
+        },
+        () => {
+          void this.handlePMEarlyExit();
+        }
+      );
+      logger.info('Interactive mode enabled');
+
+      // Set 30-minute timeout for PM interaction
+      this.pmTimeout = setTimeout(() => {
+        void this.handlePMTimeout();
+      }, 30 * 60 * 1000);
+
       // Transition to spec_pending state
       this.workflowEngine.transitionTo('spec_pending');
-
-      // Send initial instruction to Product Manager
-      await this.sendPMInstruction(featureName);
 
       // Start file monitoring
       this.fileMonitor.start();
@@ -181,39 +232,32 @@ export class Orchestrator {
         status: 'idle',
       };
 
-      // Create tmux session
-      await this.sessionManager.createAgentSession(agent);
+      // Generate system prompt for the agent
+      if (!this.workflowEngine) {
+        throw new Error('Workflow engine not initialized');
+      }
+
+      const context: InstructionContext = {
+        featureName: this.workflowEngine.getFeatureName(),
+        featureSlug: this.workflowEngine.getFeatureSlug(),
+        initialPrompt: this.workflowEngine.getInitialPrompt(),
+      };
+
+      const systemPrompt = generateInstructions(config.role, context);
+
+      // Create tmux session and launch Claude CLI for PM only
+      await this.sessionManager.createAgentSession(agent, {
+        launchClaude: config.role === 'product-manager',
+        systemPrompt,
+        workingDirectory: this.config.workspaceRoot,
+        sessionId: `syzygy-${this.workflowEngine.getFeatureSlug()}-${config.role}`,
+      });
 
       // Store agent
       this.agents.set(agent.id, agent);
 
       logger.info({ agentId: agent.id, role: agent.role }, 'Core agent created');
     }
-  }
-
-  /**
-   * Send initial instruction to Product Manager
-   * @private
-   */
-  private async sendPMInstruction(featureName: string): Promise<void> {
-    const pmAgent = this.agents.get('product-manager');
-    if (!pmAgent) {
-      throw new Error('Product Manager agent not found');
-    }
-
-    const context: InstructionContext = {
-      featureName,
-    };
-
-    const instruction = generateInstructions('product-manager', context);
-
-    await this.agentRunner.sendInstruction(pmAgent.sessionName, instruction);
-
-    // Update agent status
-    pmAgent.status = 'working';
-    this.agents.set(pmAgent.id, pmAgent);
-
-    logger.info({ featureName }, 'PM instruction sent');
   }
 
   /**
@@ -249,6 +293,7 @@ export class Orchestrator {
       // Build context with only relevant paths
       const context: InstructionContext = {
         featureName: this.workflowEngine.getFeatureName(),
+        featureSlug: this.workflowEngine.getFeatureSlug(),
       };
 
       // Add stage-specific path
@@ -458,6 +503,100 @@ export class Orchestrator {
   }
 
   /**
+   * Forward user input to PM tmux session
+   * @private
+   */
+  private async forwardInputToPM(char: string): Promise<void> {
+    const pmAgent = this.agents.get('product-manager');
+    if (!pmAgent) return;
+
+    try {
+      if (char === '\n') {
+        await sendSpecialKey(pmAgent.sessionName, 'Enter');
+      } else if (char === '\x7f') {
+        await sendSpecialKey(pmAgent.sessionName, 'BSpace');
+      } else {
+        await sendKeysRaw(pmAgent.sessionName, char);
+      }
+    } catch (error) {
+      logger.error({ error }, 'Failed to forward input to PM');
+    }
+  }
+
+  /**
+   * Handle spec completion
+   * @private
+   */
+  private async handleSpecComplete(): Promise<void> {
+    logger.info('PM spec complete, transitioning workflow');
+
+    // Clear PM timeout
+    if (this.pmTimeout) {
+      clearTimeout(this.pmTimeout);
+      this.pmTimeout = undefined;
+    }
+
+    // Disable interactive mode
+    this.splitScreen?.disableInteractiveMode();
+
+    // Stop PM monitoring
+    this.pmMonitor?.stopPolling();
+
+    // Transition workflow to next stage
+    this.workflowEngine?.transitionTo('arch_pending');
+
+    // Update UI
+    this.splitScreen?.updateWorkflowState('arch_pending');
+
+    logger.info('Workflow transitioned to architecture stage');
+  }
+
+  /**
+   * Handle PM timeout
+   * @private
+   */
+  private async handlePMTimeout(): Promise<void> {
+    logger.warn('PM session timed out');
+
+    // Stop PM monitoring
+    this.pmMonitor?.stopPolling();
+    this.splitScreen?.disableInteractiveMode();
+
+    // For now, just log and continue
+    // TODO: Add user prompt for action (continue/restart/abort)
+    logger.warn('PM timeout handling not fully implemented - continuing');
+  }
+
+  /**
+   * Handle user exiting interactive mode early
+   * @private
+   */
+  private async handlePMEarlyExit(): Promise<void> {
+    logger.info('User exited PM interactive mode');
+
+    // Check if spec exists
+    if (!this.workflowEngine) return;
+
+    const featureSlug = this.workflowEngine.getFeatureSlug();
+    const specPath = `.syzygy/stages/spec/pending/${featureSlug}-spec.md`;
+
+    try {
+      const { access } = await import('node:fs/promises');
+      await access(specPath);
+
+      // Spec exists, continue workflow
+      logger.info('Spec file exists, continuing workflow');
+      await this.handleSpecComplete();
+    } catch {
+      // Spec doesn't exist, prompt user
+      logger.warn('Spec incomplete, user exited early');
+      // TODO: Add user prompt for action (reattach/abort)
+      logger.warn('Early exit handling not fully implemented - aborting');
+      await this.stopWorkflow();
+    }
+  }
+
+  /**
    * Cleanup resources (sessions, monitors)
    * @private
    */
@@ -465,6 +604,18 @@ export class Orchestrator {
     logger.info('Cleaning up orchestrator resources');
 
     try {
+      // Clear PM timeout
+      if (this.pmTimeout) {
+        clearTimeout(this.pmTimeout);
+        this.pmTimeout = undefined;
+      }
+
+      // Stop PM monitoring
+      this.pmMonitor?.stopPolling();
+
+      // Stop split screen
+      this.splitScreen?.stop();
+
       // Stop file monitoring
       if (this.fileMonitor) {
         this.fileMonitor.stop();
