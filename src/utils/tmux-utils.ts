@@ -291,7 +291,98 @@ export async function sendSpecialKey(
 }
 
 /**
- * Launch Claude Code CLI in a tmux session
+ * Options for async Claude CLI initialization
+ */
+export interface ClaudeCLIInitOptions {
+  systemPromptPath: string;
+  workingDirectory: string;
+  sessionId: string;
+  onProgress?: (elapsedSeconds: number) => void;
+  onReady?: () => void;
+  onError?: (error: Error) => void;
+}
+
+/**
+ * Result of async Claude CLI launch
+ */
+export interface ClaudeCLIInitResult {
+  waitForReady: () => Promise<void>;
+  abort: () => void;
+}
+
+/**
+ * Check if Claude CLI output indicates it's ready
+ */
+function isClaudeReady(output: string): boolean {
+  return (
+    output.includes('Claude Code') ||
+    output.includes('How can I help') ||
+    output.includes('claude>') ||
+    output.includes('What would you like to work on?') ||
+    /^>\s*$/m.test(output)
+  );
+}
+
+/**
+ * Launch Claude Code CLI asynchronously - returns immediately and polls in background
+ */
+export async function launchClaudeCLIAsync(
+  sessionName: SessionName,
+  options: ClaudeCLIInitOptions
+): Promise<ClaudeCLIInitResult> {
+  // Change to working directory (fast operation)
+  await sendKeys(sessionName, `cd ${escapeShellArg(options.workingDirectory)}`);
+  await new Promise(resolve => setTimeout(resolve, 500));
+
+  // Launch Claude CLI with system prompt
+  const claudeCommand = `claude --system-prompt ${escapeShellArg(options.systemPromptPath)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+  await sendKeys(sessionName, claudeCommand);
+
+  // Return immediately, poll in background
+  let aborted = false;
+  const readyPromise = new Promise<void>((resolve, reject) => {
+    // Background polling loop - doesn't block the caller
+    (async () => {
+      const maxAttempts = 90;
+      for (let i = 0; i < maxAttempts && !aborted; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        options.onProgress?.(i + 1);
+
+        try {
+          const output = await capturePane(sessionName);
+          if (isClaudeReady(output)) {
+            options.onReady?.();
+            resolve();
+            return;
+          }
+        } catch {
+          // Ignore capture errors during polling, continue trying
+        }
+      }
+
+      if (!aborted) {
+        const err = new TmuxError(
+          'Claude CLI failed to initialize within timeout',
+          claudeCommand,
+          undefined,
+          `Timeout after ${maxAttempts}s`
+        );
+        options.onError?.(err);
+        reject(err);
+      }
+    })();
+  });
+
+  return {
+    waitForReady: () => readyPromise,
+    abort: () => {
+      aborted = true;
+    },
+  };
+}
+
+/**
+ * Launch Claude Code CLI in a tmux session (blocking version)
  */
 export async function launchClaudeCLI(
   sessionName: SessionName,

@@ -18,6 +18,12 @@ interface AgentStatusDisplay {
   currentTask?: string | undefined;
 }
 
+interface AgentInitProgress {
+  agentId: string;
+  status: 'initializing' | 'ready' | 'error';
+  elapsed: number;
+}
+
 interface SyzygyStatusProps {
   workflowState: WorkflowState;
   agents: AgentStatusDisplay[];
@@ -115,6 +121,78 @@ function SyzygyStatus({ workflowState, agents, featureName }: SyzygyStatusProps)
               {getStatusIcon(agent.status)} {agent.role}
               {agent.status === 'working' && agent.currentTask && (
                 <Text dimColor> - {agent.currentTask}</Text>
+              )}
+            </Text>
+          </Box>
+        ))}
+      </Box>
+    </Box>
+  );
+}
+
+/**
+ * Initialization status display component
+ */
+interface InitializationStatusProps {
+  initProgress: AgentInitProgress[];
+  isInitializing: boolean;
+}
+
+function InitializationStatus({
+  initProgress,
+  isInitializing,
+}: InitializationStatusProps): React.JSX.Element | null {
+  if (!isInitializing || initProgress.length === 0) {
+    return null;
+  }
+
+  const getStatusIcon = (status: AgentInitProgress['status']): string => {
+    switch (status) {
+      case 'initializing':
+        return '';  // Spinner will be shown instead
+      case 'ready':
+        return '[OK]';
+      case 'error':
+        return '[X]';
+      default:
+        return '';
+    }
+  };
+
+  const getStatusColor = (status: AgentInitProgress['status']): 'yellow' | 'green' | 'red' => {
+    switch (status) {
+      case 'initializing':
+        return 'yellow';
+      case 'ready':
+        return 'green';
+      case 'error':
+        return 'red';
+      default:
+        return 'yellow';
+    }
+  };
+
+  return (
+    <Box flexDirection="column" padding={1} borderStyle="round" borderColor="yellow">
+      <Box marginBottom={1}>
+        <Text bold color="yellow">
+          Initializing Agents...
+        </Text>
+      </Box>
+
+      <Box flexDirection="column">
+        {initProgress.map((progress) => (
+          <Box key={progress.agentId} marginTop={0.5}>
+            <Text color={getStatusColor(progress.status)}>
+              {progress.status === 'initializing' ? (
+                <>
+                  <Spinner type="dots" /> {progress.agentId}: Starting Claude CLI ({progress.elapsed}s)
+                </>
+              ) : (
+                <>
+                  {getStatusIcon(progress.status)} {progress.agentId}:{' '}
+                  {progress.status === 'ready' ? 'Ready' : 'Failed'}
+                </>
               )}
             </Text>
           </Box>
@@ -223,6 +301,8 @@ interface SplitScreenProps {
   inputBuffer: string;
   onUserInput: (char: string) => void;
   onExitInteractive: () => void;
+  initProgress: AgentInitProgress[];
+  isInitializing: boolean;
 }
 
 function SplitScreen({
@@ -234,9 +314,21 @@ function SplitScreen({
   inputBuffer,
   onUserInput,
   onExitInteractive,
+  initProgress,
+  isInitializing,
 }: SplitScreenProps): React.JSX.Element {
   return (
     <Box flexDirection="column" height="100%">
+      {/* Initialization Status - shown during agent init */}
+      {isInitializing && (
+        <Box marginBottom={1}>
+          <InitializationStatus
+            initProgress={initProgress}
+            isInitializing={isInitializing}
+          />
+        </Box>
+      )}
+
       {/* PM Chat - Top Half */}
       <Box flexGrow={1}>
         <InteractivePMChat
@@ -285,9 +377,38 @@ export class SplitScreenController {
   private inputBuffer = '';
   private inputCallback: ((char: string) => void) | undefined;
   private exitCallback: (() => void) | undefined;
+  private initProgressMap: Map<string, AgentInitProgress> = new Map();
+  private isInitializing = true;
 
   constructor(featureName: string) {
     this.featureName = featureName;
+  }
+
+  /**
+   * Update initialization progress for an agent
+   */
+  updateInitProgress(
+    agentId: string,
+    status: 'initializing' | 'ready' | 'error',
+    elapsed: number
+  ): void {
+    this.initProgressMap.set(agentId, { agentId, status, elapsed });
+    this.triggerUpdate();
+  }
+
+  /**
+   * Mark initialization as complete (hide initialization panel)
+   */
+  setInitializationComplete(): void {
+    this.isInitializing = false;
+    this.triggerUpdate();
+  }
+
+  /**
+   * Get current initialization progress as array
+   */
+  private getInitProgress(): AgentInitProgress[] {
+    return Array.from(this.initProgressMap.values());
   }
 
   /**
@@ -322,6 +443,8 @@ export class SplitScreenController {
           inputBuffer={this.inputBuffer}
           onUserInput={(char) => this.handleUserInput(char)}
           onExitInteractive={() => this.handleExitInteractive()}
+          initProgress={this.getInitProgress()}
+          isInitializing={this.isInitializing}
         />
       );
     };

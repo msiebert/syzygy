@@ -37,3 +37,23 @@ export function createAgentLogger(agentId: string): pino.Logger {
 export function createModuleLogger(module: string): pino.Logger {
   return logger.child({ module });
 }
+
+// Saved log level for pause/resume
+let savedLogLevel: string = 'info';
+
+/**
+ * Pause logging (set level to silent)
+ * Use during Ink rendering to prevent display corruption
+ */
+export function pauseLogging(): void {
+  savedLogLevel = logger.level;
+  logger.level = 'silent';
+}
+
+/**
+ * Resume logging (restore previous level)
+ * Call after Ink rendering stops
+ */
+export function resumeLogging(): void {
+  logger.level = savedLogLevel;
+}

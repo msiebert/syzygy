@@ -6,11 +6,34 @@ import type { Agent, AgentId } from '../types/agent.types.js';
 import type { TmuxSession } from '../types/message.types.js';
 import { SessionError } from '../types/message.types.js';
 import { createModuleLogger } from '@utils/logger';
-import { createSession, destroySession, launchClaudeCLI } from '@utils/tmux-utils';
+import {
+  createSession,
+  destroySession,
+  launchClaudeCLI,
+  launchClaudeCLIAsync,
+  type ClaudeCLIInitResult,
+} from '@utils/tmux-utils';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
 const logger = createModuleLogger('session-manager');
+
+/**
+ * Callbacks for async agent session creation
+ */
+export interface AsyncSessionCallbacks {
+  onProgress?: (agentId: AgentId, elapsed: number) => void;
+  onReady?: (agentId: AgentId) => void;
+  onError?: (agentId: AgentId, error: Error) => void;
+}
+
+/**
+ * Result of async agent session creation
+ */
+export interface AsyncSessionResult {
+  session: TmuxSession;
+  claudeInit?: ClaudeCLIInitResult | undefined;
+}
 
 export class SessionManager {
   private sessions: Map<AgentId, TmuxSession> = new Map();
@@ -117,6 +140,97 @@ export class SessionManager {
         'Failed to create agent session'
       );
 
+      if (error instanceof SessionError) {
+        throw error;
+      }
+
+      throw new SessionError(
+        `Failed to create session for agent ${agent.id}`,
+        agent.id,
+        { originalError: error }
+      );
+    }
+  }
+
+  /**
+   * Create a new agent session with async Claude CLI initialization
+   * Returns immediately after creating tmux session, Claude init runs in background
+   */
+  async createAgentSessionAsync(
+    agent: Agent,
+    options?: {
+      launchClaude?: boolean;
+      systemPrompt?: string;
+      workingDirectory?: string;
+      sessionId?: string;
+    },
+    callbacks?: AsyncSessionCallbacks
+  ): Promise<AsyncSessionResult> {
+    try {
+      // Check if session already exists
+      if (this.sessions.has(agent.id)) {
+        throw new SessionError(
+          'Session already exists for this agent',
+          agent.id,
+          { sessionName: agent.sessionName }
+        );
+      }
+
+      // Create tmux session (fast operation)
+      const session = await createSession(agent.sessionName);
+
+      // Store session metadata with agent ID
+      const agentSession: TmuxSession = {
+        ...session,
+        agentId: agent.id,
+      };
+
+      this.sessions.set(agent.id, agentSession);
+
+      // Launch Claude CLI asynchronously if requested
+      let claudeInit: ClaudeCLIInitResult | undefined;
+      if (options?.launchClaude && options.systemPrompt) {
+        // Validate prompt is not empty
+        if (!options.systemPrompt || options.systemPrompt.trim().length === 0) {
+          throw new SessionError(
+            'System prompt cannot be empty',
+            agent.id,
+            { role: agent.role }
+          );
+        }
+
+        // Write system prompt to file (fast operation)
+        const promptPath = `.syzygy/stages/prompts/${agent.role}-prompt.md`;
+        await mkdir(dirname(promptPath), { recursive: true });
+        await writeFile(promptPath, options.systemPrompt, 'utf-8');
+
+        // Verify file was written correctly
+        const writtenContent = await readFile(promptPath, 'utf-8');
+        if (writtenContent !== options.systemPrompt) {
+          throw new SessionError(
+            'Prompt file write verification failed',
+            agent.id,
+            {
+              promptPath,
+              expectedLength: options.systemPrompt.length,
+              actualLength: writtenContent.length,
+            }
+          );
+        }
+
+        // Launch Claude CLI asynchronously - returns immediately
+        claudeInit = await launchClaudeCLIAsync(agent.sessionName, {
+          systemPromptPath: promptPath,
+          workingDirectory: options.workingDirectory || process.cwd(),
+          sessionId: options.sessionId || `syzygy-${agent.role}`,
+          onProgress: (elapsed) => callbacks?.onProgress?.(agent.id, elapsed),
+          onReady: () => callbacks?.onReady?.(agent.id),
+          onError: (err) => callbacks?.onError?.(agent.id, err),
+        });
+      }
+
+      return { session: agentSession, claudeInit };
+    } catch (error) {
       if (error instanceof SessionError) {
         throw error;
       }

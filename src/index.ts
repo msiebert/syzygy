@@ -16,7 +16,6 @@ import {
   displayInfo,
   type SyzygySettings,
 } from './cli/prompts.js';
-import { SplitScreenController, showLoadingScreen } from './cli/split-screen.js';
 import { createModuleLogger } from '@utils/logger';
 import type { MenuChoice } from './cli/menu.js';
 
@@ -64,25 +63,12 @@ async function handleNewFeature(): Promise<void> {
       pollInterval: currentSettings.pollInterval,
     });
 
-    // Create split screen controller
-    const splitScreen = new SplitScreenController(featureName);
-
     try {
-      // Start workflow
-      const loading = showLoadingScreen('Initializing workspace and agents...');
-
+      // Start workflow - returns quickly, Claude init happens in background
       await orchestrator.startWorkflow(featureName, initialPrompt);
 
-      await loading.stop();
-
-      // Start split screen display
-      splitScreen.start();
-
-      // Update split screen with initial agent status
-      splitScreen.updateAgents(orchestrator.getActiveAgents());
-      splitScreen.updateWorkflowState(orchestrator.getWorkflowState());
-
-      // Monitor workflow - poll and update UI
+      // Start UI immediately - shows initialization progress until PM is ready
+      orchestrator.startUI();
 
       // Event loop control
       let shouldExit = false;
@@ -93,15 +79,9 @@ async function handleNewFeature(): Promise<void> {
         shouldExit = true;
       });
 
-      // Event loop: poll and update UI
+      // Event loop: monitor for completion (orchestrator handles UI)
       while (!shouldExit) {
-        // Get current state
         const currentState = orchestrator.getWorkflowState();
-        const currentAgents = orchestrator.getActiveAgents();
-
-        // Update UI
-        splitScreen.updateWorkflowState(currentState);
-        splitScreen.updateAgents(currentAgents);
 
         // Check for completion
         if (currentState === 'complete') {
@@ -118,9 +98,6 @@ async function handleNewFeature(): Promise<void> {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
     } finally {
-      // Cleanup
-      splitScreen.stop();
-
       // Ensure stdin is restored to normal mode
       if (process.stdin.setRawMode) {
         process.stdin.setRawMode(false);

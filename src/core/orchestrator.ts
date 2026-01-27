@@ -48,6 +48,7 @@ export class Orchestrator {
   private pmMonitor?: PMMonitor;
   private splitScreen?: SplitScreenController;
   private pmTimeout: NodeJS.Timeout | undefined;
+  private pmInitResult: { waitForReady: () => Promise<void>; abort: () => void } | undefined = undefined;
 
   constructor(config: OrchestratorConfig = {}) {
     this.config = {
@@ -67,6 +68,7 @@ export class Orchestrator {
 
   /**
    * Start a new workflow
+   * Returns quickly - Claude initialization happens in background
    */
   async startWorkflow(featureName: string, initialPrompt: string): Promise<void> {
     if (this.isRunning) {
@@ -84,60 +86,19 @@ export class Orchestrator {
       await this.stageManager.initializeStages(workspaceRoot);
       logger.info('Workspace initialized');
 
+      // Create split screen UI immediately - shows initialization progress
+      this.splitScreen = new SplitScreenController(featureName);
+
       // Setup file monitoring
       this.setupFileMonitoring();
 
-      // Create always-running agents (PM and Architect)
-      await this.createCoreAgents();
-      logger.info('Core agents created');
-
-      // Get PM agent
-      const pmAgent = this.agents.get('product-manager');
-      if (!pmAgent) {
-        throw new Error('PM agent not found');
-      }
-
-      // Create split screen UI
-      this.splitScreen = new SplitScreenController(featureName);
-      this.splitScreen.start();
-      logger.info('Split screen UI started');
+      // Create core agents with async Claude initialization
+      await this.createCoreAgentsAsync();
+      logger.info('Core agents created (Claude init in background)');
 
       // Update initial agent statuses in UI
       this.splitScreen.updateAgents(Array.from(this.agents.values()));
       this.splitScreen.updateWorkflowState('spec_pending');
-
-      // Create PM monitor
-      this.pmMonitor = new PMMonitor(pmAgent.sessionName, {
-        pollInterval: 200, // 200ms for low latency
-        featureName,
-        featureSlug: this.workflowEngine.getFeatureSlug(),
-        onNewMessage: (message) => {
-          this.splitScreen?.addChatMessage('pm', message);
-        },
-        onSpecComplete: () => {
-          void this.handleSpecComplete();
-        },
-      });
-
-      // Start PM monitoring
-      await this.pmMonitor.startPolling();
-      logger.info('PM monitoring started');
-
-      // Enable interactive mode in split screen
-      this.splitScreen.enableInteractiveMode(
-        (char) => {
-          void this.forwardInputToPM(char);
-        },
-        () => {
-          void this.handlePMEarlyExit();
-        }
-      );
-      logger.info('Interactive mode enabled');
-
-      // Set 30-minute timeout for PM interaction
-      this.pmTimeout = setTimeout(() => {
-        void this.handlePMTimeout();
-      }, 30 * 60 * 1000);
 
       // Transition to spec_pending state
       this.workflowEngine.transitionTo('spec_pending');
@@ -153,6 +114,22 @@ export class Orchestrator {
       await this.cleanup();
       throw error;
     }
+  }
+
+  /**
+   * Start the UI display
+   * Call this after startWorkflow to begin rendering
+   */
+  startUI(): void {
+    if (!this.splitScreen) {
+      throw new Error('Workflow not started - call startWorkflow first');
+    }
+
+    // Clear terminal for clean Ink rendering
+    console.clear();
+
+    // Start split screen display - shows initialization progress until PM is ready
+    this.splitScreen.start();
   }
 
   /**
@@ -220,7 +197,9 @@ export class Orchestrator {
   /**
    * Create core agents (PM and Architect) that are always running
    * @private
+   * @deprecated Use createCoreAgentsAsync for non-blocking initialization
    */
+  // @ts-expect-error - Preserved for backwards compatibility, use createCoreAgentsAsync instead
   private async createCoreAgents(): Promise<void> {
     const coreConfigs = getAlwaysRunningAgents();
 
@@ -250,7 +229,7 @@ export class Orchestrator {
         launchClaude: config.role === 'product-manager',
         systemPrompt,
         workingDirectory: this.config.workspaceRoot,
-        sessionId: `syzygy-${this.workflowEngine.getFeatureSlug()}-${config.role}`,
+        sessionId: crypto.randomUUID(),
       });
 
       // Store agent
@@ -258,6 +237,123 @@ export class Orchestrator {
 
       logger.info({ agentId: agent.id, role: agent.role }, 'Core agent created');
     }
+  }
+
+  /**
+   * Create core agents with async Claude CLI initialization
+   * Returns quickly - Claude init runs in background
+   * @private
+   */
+  private async createCoreAgentsAsync(): Promise<void> {
+    const coreConfigs = getAlwaysRunningAgents();
+
+    for (const config of coreConfigs) {
+      const agent: Agent = {
+        id: toAgentId(config.role),
+        role: config.role,
+        sessionName: getSessionName(config.role),
+        status: 'idle',
+      };
+
+      // Generate system prompt for the agent
+      if (!this.workflowEngine) {
+        throw new Error('Workflow engine not initialized');
+      }
+
+      const context: InstructionContext = {
+        featureName: this.workflowEngine.getFeatureName(),
+        featureSlug: this.workflowEngine.getFeatureSlug(),
+        initialPrompt: this.workflowEngine.getInitialPrompt(),
+      };
+
+      const systemPrompt = generateInstructions(config.role, context);
+
+      // Show initialization progress for PM
+      if (config.role === 'product-manager') {
+        this.splitScreen?.updateInitProgress(agent.id, 'initializing', 0);
+
+        // Create tmux session with async Claude CLI initialization
+        const result = await this.sessionManager.createAgentSessionAsync(agent, {
+          launchClaude: true,
+          systemPrompt,
+          workingDirectory: this.config.workspaceRoot,
+          sessionId: crypto.randomUUID(),
+        }, {
+          onProgress: (agentId, elapsed) => {
+            this.splitScreen?.updateInitProgress(agentId, 'initializing', elapsed);
+          },
+          onReady: (agentId) => {
+            this.splitScreen?.updateInitProgress(agentId, 'ready', 0);
+            this.onPMReady();
+          },
+          onError: (agentId) => {
+            this.splitScreen?.updateInitProgress(agentId, 'error', 0);
+          },
+        });
+
+        // Store the init result so we can abort if needed
+        this.pmInitResult = result.claudeInit;
+      } else {
+        // Non-PM agents: just create tmux session (no Claude CLI)
+        await this.sessionManager.createAgentSession(agent, {
+          launchClaude: false,
+          systemPrompt,
+          workingDirectory: this.config.workspaceRoot,
+          sessionId: crypto.randomUUID(),
+        });
+      }
+
+      // Store agent
+      this.agents.set(agent.id, agent);
+
+      logger.info({ agentId: agent.id, role: agent.role }, 'Core agent created');
+    }
+  }
+
+  /**
+   * Called when PM Claude CLI is ready
+   * @private
+   */
+  private onPMReady(): void {
+    // Hide initialization panel
+    this.splitScreen?.setInitializationComplete();
+
+    // Get PM agent
+    const pmAgent = this.agents.get('product-manager');
+    if (!pmAgent || !this.workflowEngine) return;
+
+    // Create PM monitor
+    this.pmMonitor = new PMMonitor(pmAgent.sessionName, {
+      pollInterval: 200, // 200ms for low latency
+      featureName: this.workflowEngine.getFeatureName(),
+      featureSlug: this.workflowEngine.getFeatureSlug(),
+      onNewMessage: (message) => {
+        this.splitScreen?.addChatMessage('pm', message);
+      },
+      onSpecComplete: () => {
+        void this.handleSpecComplete();
+      },
+    });
+
+    // Start PM monitoring
+    this.pmMonitor.startPolling().catch(() => {
+      // Ignore polling start errors
+    });
+
+    // Set 30-minute timeout for PM interaction
+    this.pmTimeout = setTimeout(() => {
+      void this.handlePMTimeout();
+    }, 30 * 60 * 1000);
+
+    // Enable interactive mode for PM chat
+    this.splitScreen?.enableInteractiveMode(
+      (char) => {
+        void this.forwardInputToPM(char);
+      },
+      () => {
+        void this.handlePMEarlyExit();
+      }
+    );
   }
 
   /**
@@ -608,6 +704,12 @@ export class Orchestrator {
       if (this.pmTimeout) {
         clearTimeout(this.pmTimeout);
         this.pmTimeout = undefined;
+      }
+
+      // Abort PM initialization if still running
+      if (this.pmInitResult) {
+        this.pmInitResult.abort();
+        this.pmInitResult = undefined;
       }
 
       // Stop PM monitoring
