@@ -159,7 +159,7 @@ export async function capturePane(sessionName: SessionName): Promise<string> {
       '-t', sessionName,
       '-p', // print to stdout
       '-J', // join wrapped lines
-      '-S', '-', // start from beginning of history
+      '-S', '-50', // last 50 lines only (prevents capturing redraw history)
     ]);
     logger.debug({ sessionName, lines: output.split('\n').length }, 'Pane captured');
     return output;

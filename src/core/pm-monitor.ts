@@ -127,16 +127,26 @@ export class PMMonitor {
   }
 
   /**
-   * Extract new content from output (simple diff)
+   * Extract new content from output using line-based comparison
    * @private
    */
   private extractNewContent(currentOutput: string): string | null {
-    if (currentOutput.length <= this.previousOutput.length) {
-      return null;
+    const currentLines = currentOutput.split('\n');
+    const previousLines = this.previousOutput.split('\n');
+
+    // Find where content diverges
+    let commonPrefix = 0;
+    while (
+      commonPrefix < previousLines.length &&
+      commonPrefix < currentLines.length &&
+      currentLines[commonPrefix] === previousLines[commonPrefix]
+    ) {
+      commonPrefix++;
     }
 
-    // Extract only the new content
-    return currentOutput.slice(this.previousOutput.length);
+    // Return new lines after common prefix
+    const newLines = currentLines.slice(commonPrefix);
+    return newLines.length > 0 ? newLines.join('\n') : null;
   }
 
   /**
