@@ -7,6 +7,7 @@ import type { SessionName } from '../types/agent.types.js';
 import { toAgentId, toSessionName } from '../types/agent.types.js';
 import { createModuleLogger } from '@utils/logger';
 import { escapeShellArg } from '@utils/sanitize';
+import { readFile } from 'node:fs/promises';
 
 const logger = createModuleLogger('tmux-utils');
 
@@ -334,8 +335,11 @@ export async function launchClaudeCLIAsync(
   await sendKeys(sessionName, `cd ${escapeShellArg(options.workingDirectory)}`);
   await new Promise(resolve => setTimeout(resolve, 500));
 
-  // Launch Claude CLI with system prompt
-  const claudeCommand = `claude --system-prompt ${escapeShellArg(options.systemPromptPath)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+  // Read system prompt file content - --append-system-prompt requires inline text, not a file path
+  const promptContent = await readFile(options.systemPromptPath, 'utf-8');
+
+  // Launch Claude CLI with system prompt (use --append-system-prompt to preserve built-in capabilities)
+  const claudeCommand = `claude --append-system-prompt ${escapeShellArg(promptContent)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
   await sendKeys(sessionName, claudeCommand);
 
   // Return immediately, poll in background
@@ -401,8 +405,11 @@ export async function launchClaudeCLI(
     // Wait longer for cd to complete and verify
     await new Promise(resolve => setTimeout(resolve, 500));
 
-    // Launch Claude CLI with system prompt (pass file path directly, not via command substitution)
-    const claudeCommand = `claude --system-prompt ${escapeShellArg(options.systemPromptPath)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+    // Read system prompt file content - --append-system-prompt requires inline text, not a file path
+    const promptContent = await readFile(options.systemPromptPath, 'utf-8');
+
+    // Launch Claude CLI with system prompt (use --append-system-prompt to preserve built-in capabilities)
+    const claudeCommand = `claude --append-system-prompt ${escapeShellArg(promptContent)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
     await sendKeys(sessionName, claudeCommand);
 
     // Wait for Claude to initialize (poll for prompt)

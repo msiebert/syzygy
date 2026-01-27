@@ -2,9 +2,16 @@
  * Unit tests for tmux-utils
  */
 
-import { describe, it, expect, spyOn } from 'bun:test';
+import { describe, it, expect, spyOn, beforeAll, afterAll } from 'bun:test';
 import * as tmuxUtils from '../../src/utils/tmux-utils.js';
 import { toSessionName, toAgentId } from '../../src/types/agent.types.js';
+import { writeFile, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+// Temp file for launchClaudeCLI tests
+const TEMP_PROMPT_PATH = join(tmpdir(), 'syzygy-test-prompt.md');
+const TEMP_PROMPT_CONTENT = '# Test System Prompt\n\nYou are a test agent.';
 
 describe('tmux-utils', () => {
   describe('createSession', () => {
@@ -421,6 +428,16 @@ describe('tmux-utils', () => {
   });
 
   describe('launchClaudeCLI', () => {
+    // Setup: Create temp prompt file before tests
+    beforeAll(async () => {
+      await writeFile(TEMP_PROMPT_PATH, TEMP_PROMPT_CONTENT, 'utf-8');
+    });
+
+    // Cleanup: Remove temp prompt file after tests
+    afterAll(async () => {
+      await unlink(TEMP_PROMPT_PATH).catch(() => {});
+    });
+
     it('should launch Claude CLI successfully with Claude Code prompt', async () => {
       const mockSpawn = spyOn(Bun, 'spawn');
 
@@ -472,7 +489,7 @@ describe('tmux-utils', () => {
       } as any));
 
       await tmuxUtils.launchClaudeCLI(toSessionName('test-pm'), {
-        systemPromptPath: '/tmp/prompt.md',
+        systemPromptPath: TEMP_PROMPT_PATH,
         workingDirectory: '/tmp/project',
         sessionId: 'test-session',
       });
@@ -531,7 +548,7 @@ describe('tmux-utils', () => {
       } as any));
 
       await tmuxUtils.launchClaudeCLI(toSessionName('test-pm'), {
-        systemPromptPath: '/tmp/prompt.md',
+        systemPromptPath: TEMP_PROMPT_PATH,
         workingDirectory: '/tmp/project',
         sessionId: 'test-session',
       });
@@ -593,7 +610,7 @@ describe('tmux-utils', () => {
 
       await expect(
         tmuxUtils.launchClaudeCLI(toSessionName('test-pm'), {
-          systemPromptPath: '/tmp/prompt.md',
+          systemPromptPath: TEMP_PROMPT_PATH,
           workingDirectory: '/tmp/project',
           sessionId: 'test-session',
         })
@@ -602,7 +619,7 @@ describe('tmux-utils', () => {
       mockSpawn.mockRestore();
     });
 
-    it('should use file path directly, not command substitution', async () => {
+    it('should read prompt file and pass content inline via --append-system-prompt', async () => {
       const mockSpawn = spyOn(Bun, 'spawn');
 
       // Mock send-keys for cd command
@@ -652,12 +669,12 @@ describe('tmux-utils', () => {
       } as any));
 
       await tmuxUtils.launchClaudeCLI(toSessionName('test-pm'), {
-        systemPromptPath: '/path/to/prompt.md',
+        systemPromptPath: TEMP_PROMPT_PATH,
         workingDirectory: '/tmp/project',
         sessionId: 'test-session',
       });
 
-      // Verify that the command was sent (uses file path directly, not $(cat ...))
+      // Verify that the command was sent (reads file and passes content inline)
       expect(mockSpawn).toHaveBeenCalledTimes(3); // cd, claude, capture
 
       mockSpawn.mockRestore();

@@ -345,6 +345,9 @@ export class Orchestrator {
       void this.handlePMTimeout();
     }, 30 * 60 * 1000);
 
+    // Send initial prompt to PM to kick off the conversation
+    void this.sendInitialPromptToPM();
+
     // Enable interactive mode for PM chat
     this.splitScreen?.enableInteractiveMode(
       (char) => {
@@ -354,6 +357,30 @@ export class Orchestrator {
         void this.handlePMEarlyExit();
       }
     );
+  }
+
+  /**
+   * Send initial user prompt to PM to start the conversation
+   * @private
+   */
+  private async sendInitialPromptToPM(): Promise<void> {
+    const pmAgent = this.agents.get('product-manager');
+    if (!pmAgent || !this.workflowEngine) return;
+
+    const initialPrompt = this.workflowEngine.getInitialPrompt();
+    if (!initialPrompt) {
+      logger.warn('No initial prompt to send to PM');
+      return;
+    }
+
+    try {
+      logger.info({ initialPrompt }, 'Sending initial prompt to PM');
+      await sendKeysRaw(pmAgent.sessionName, initialPrompt);
+      await sendSpecialKey(pmAgent.sessionName, 'Enter');
+      logger.info('Initial prompt sent to PM successfully');
+    } catch (error) {
+      logger.error({ error }, 'Failed to send initial prompt to PM');
+    }
   }
 
   /**
