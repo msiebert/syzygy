@@ -211,4 +211,31 @@ export class StageManager {
   isInitialized(): boolean {
     return this.stages.size > 0 && this.workspaceRoot !== '';
   }
+
+  /**
+   * List all pending artifacts across all stages
+   * Returns a map from stage name to list of artifact paths
+   */
+  async listAllPendingArtifacts(): Promise<Map<StageName, string[]>> {
+    logger.debug('Listing all pending artifacts across stages');
+
+    const result = new Map<StageName, string[]>();
+    const stageNames: StageName[] = ['spec', 'arch', 'tasks', 'tests', 'impl', 'review', 'docs'];
+
+    for (const stageName of stageNames) {
+      try {
+        const pending = await this.listPendingArtifacts(stageName);
+        result.set(stageName, pending);
+      } catch (error) {
+        // Stage may not be initialized yet, return empty array
+        logger.debug({ stageName, error }, 'Could not list pending artifacts for stage');
+        result.set(stageName, []);
+      }
+    }
+
+    const totalCount = Array.from(result.values()).reduce((sum, arr) => sum + arr.length, 0);
+    logger.debug({ totalCount }, 'Listed all pending artifacts');
+
+    return result;
+  }
 }

@@ -53,6 +53,31 @@ export class WorkflowEngine {
   }
 
   /**
+   * Create a workflow engine in a resumed state
+   * Used when resuming a workflow from pending artifacts
+   */
+  static fromResumeState(
+    featureName: string,
+    featureSlug: string,
+    resumeState: WorkflowState,
+    initialPrompt?: string
+  ): WorkflowEngine {
+    const engine = new WorkflowEngine(featureName, initialPrompt ?? '[Resumed workflow]');
+
+    // Override the context to set the resumed state directly
+    // This bypasses normal state transitions since we're resuming
+    engine.context.state = resumeState;
+    engine.context.featureSlug = featureSlug;
+
+    logger.info(
+      { featureName, featureSlug, resumeState },
+      'Workflow engine created from resume state'
+    );
+
+    return engine;
+  }
+
+  /**
    * Get current workflow state
    */
   getCurrentState(): WorkflowState {

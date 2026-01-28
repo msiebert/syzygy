@@ -121,11 +121,82 @@ async function handleNewFeature(): Promise<void> {
  * Handle resume workflow
  */
 async function handleResumeWorkflow(): Promise<void> {
-  await showMessage(
-    'Resume Workflow',
-    'Resume workflow is not yet implemented.\nThis will allow you to continue a previously started workflow.',
-    'info'
-  );
+  try {
+    displayInfo('Checking for pending work...');
+
+    // Create orchestrator
+    const orchestrator = new Orchestrator({
+      numDevelopers: currentSettings.numDevelopers,
+      workspaceRoot: currentSettings.workspaceRoot,
+      pollInterval: currentSettings.pollInterval,
+    });
+
+    // Attempt to resume workflow
+    const result = await orchestrator.resumeWorkflow();
+
+    if (!result.success) {
+      await showMessage(
+        'Cannot Resume',
+        result.message ?? 'No pending work found.',
+        'info'
+      );
+      return;
+    }
+
+    displayInfo(`Resuming workflow: ${result.featureName}`);
+    if (result.staleLocksCleanedUp && result.staleLocksCleanedUp > 0) {
+      displayInfo(`Cleaned up ${result.staleLocksCleanedUp} stale locks`);
+    }
+
+    try {
+      // Start UI - shows workflow progress
+      orchestrator.startUI();
+
+      // Event loop control
+      let shouldExit = false;
+
+      // Setup SIGINT handler (non-blocking)
+      process.once('SIGINT', () => {
+        logger.info('Received SIGINT, stopping workflow');
+        shouldExit = true;
+      });
+
+      // Event loop: monitor for completion
+      while (!shouldExit) {
+        const currentState = orchestrator.getWorkflowState();
+
+        // Check for completion
+        if (currentState === 'complete') {
+          logger.info({ state: currentState }, 'Workflow completed successfully');
+          displayInfo('Workflow completed successfully!');
+          break;
+        } else if (currentState === 'error') {
+          logger.error({ state: currentState }, 'Workflow failed');
+          displayError('Workflow failed', 'See logs for details');
+          break;
+        }
+
+        // Sleep to avoid busy-waiting (500ms polling interval)
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    } finally {
+      await orchestrator.stopWorkflow();
+    }
+
+    displayCompletionSummary({
+      featureName: result.featureName ?? 'Unknown',
+      tasksCompleted: 0,
+      testsPassing: 0,
+      filesModified: 0,
+      duration: 0,
+    });
+  } catch (error) {
+    if (error instanceof Error) {
+      displayError('Resume failed', error.message);
+      logger.error({ error }, 'Resume workflow error');
+    }
+    throw error;
+  }
 }
 
 /**

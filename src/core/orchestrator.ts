@@ -3,7 +3,7 @@
  * Coordinates all agents through the workflow
  */
 
-import type { WorkflowState, WorkflowEvent } from '../types/workflow.types.js';
+import type { WorkflowState, WorkflowEvent, ResumeResult } from '../types/workflow.types.js';
 import type { Agent, AgentRole } from '../types/agent.types.js';
 import { toAgentId } from '../types/agent.types.js';
 import { SessionManager } from './session-manager.js';
@@ -11,6 +11,8 @@ import { WorkflowEngine } from './workflow-engine.js';
 import { FileMonitor } from './file-monitor.js';
 import { AgentRunner } from './agent-runner.js';
 import { StageManager } from '../stages/stage-manager.js';
+import { LockManager } from '../stages/lock-manager.js';
+import { ResumeDetector } from './resume-detector.js';
 import { PMMonitor } from './pm-monitor.js';
 import { SplitScreenController } from '../cli/split-screen.js';
 import {
@@ -55,6 +57,8 @@ export class Orchestrator {
   private fileMonitor: FileMonitor;
   private agentRunner: AgentRunner;
   private stageManager: StageManager;
+  private lockManager: LockManager;
+  private resumeDetector: ResumeDetector;
   private agents: Map<string, Agent> = new Map();
   private isRunning = false;
   private pmMonitor?: PMMonitor;
@@ -75,6 +79,8 @@ export class Orchestrator {
     this.fileMonitor = new FileMonitor({ debounceMs: 100 });
     this.agentRunner = new AgentRunner();
     this.stageManager = new StageManager();
+    this.lockManager = new LockManager();
+    this.resumeDetector = new ResumeDetector(this.stageManager, this.lockManager);
 
     logger.info({ config: this.config }, 'Orchestrator initialized');
   }
@@ -162,6 +168,180 @@ export class Orchestrator {
       logger.error({ error }, 'Error during workflow cleanup');
       throw error;
     }
+  }
+
+  /**
+   * Resume a workflow from pending artifacts
+   * Detects existing work and resumes from where it left off
+   */
+  async resumeWorkflow(): Promise<ResumeResult> {
+    if (this.isRunning) {
+      return {
+        success: false,
+        reason: 'no_pending_work',
+        message: 'A workflow is already running',
+      };
+    }
+
+    logger.info('Attempting to resume workflow');
+
+    try {
+      // Clean up any orphaned sessions from previous runs
+      await killSessions('syzygy-.*');
+
+      // Initialize workspace (create stage directories if needed)
+      const workspaceRoot = path.join(this.config.workspaceRoot, '.syzygy');
+      await this.stageManager.initializeStages(workspaceRoot);
+      logger.info('Workspace initialized');
+
+      // Detect resumable state
+      const resumeState = await this.resumeDetector.detectResumableState(workspaceRoot);
+
+      // Validate resume is possible
+      if (!resumeState.hasPendingWork) {
+        logger.info('No pending work to resume');
+        return {
+          success: false,
+          reason: 'no_pending_work',
+          message: 'No pending work found. Use "New Feature" to start a new workflow.',
+        };
+      }
+
+      if (!resumeState.featureName) {
+        logger.warn('Pending work found but could not determine feature name');
+        return {
+          success: false,
+          reason: 'no_feature_name',
+          message: 'Found pending work but could not determine feature name from artifacts.',
+        };
+      }
+
+      // Create workflow engine in resumed state
+      this.workflowEngine = WorkflowEngine.fromResumeState(
+        resumeState.featureName,
+        resumeState.featureSlug ?? resumeState.featureName,
+        resumeState.resumeFromState
+      );
+
+      // Create split screen UI
+      this.splitScreen = new SplitScreenController(resumeState.featureName);
+
+      // Setup file monitoring
+      this.setupFileMonitoring();
+
+      // Create only required agents (skip PM since user interaction already happened)
+      await this.createResumedAgents(resumeState.requiredAgents);
+      logger.info({ agents: resumeState.requiredAgents }, 'Resumed agents created');
+
+      // Update UI with agents and workflow state
+      this.splitScreen.updateAgents(Array.from(this.agents.values()));
+      this.splitScreen.updateWorkflowState(resumeState.resumeFromState);
+
+      // Start file monitoring
+      this.fileMonitor.start();
+
+      // Trigger processing of existing pending artifacts
+      await this.processPendingArtifacts(resumeState.pendingArtifacts);
+
+      this.isRunning = true;
+
+      logger.info(
+        { featureName: resumeState.featureName, resumeFromState: resumeState.resumeFromState },
+        'Workflow resumed successfully'
+      );
+
+      return {
+        success: true,
+        featureName: resumeState.featureName,
+        resumeFromState: resumeState.resumeFromState,
+        staleLocksCleanedUp: resumeState.staleLocksCleanedUp,
+        message: `Resuming workflow for "${resumeState.featureName}" from ${resumeState.resumeFromState}`,
+      };
+    } catch (error) {
+      logger.error({ error }, 'Failed to resume workflow');
+      await this.cleanup();
+      throw error;
+    }
+  }
+
+  /**
+   * Create agents required for resumed workflow
+   * Unlike startWorkflow, this skips the PM agent
+   * @private
+   */
+  private async createResumedAgents(requiredRoles: AgentRole[]): Promise<void> {
+    for (const role of requiredRoles) {
+      // Skip PM - user interaction already happened in original run
+      if (role === 'product-manager') {
+        continue;
+      }
+
+      const agentId = toAgentId(role);
+
+      // Check if agent already exists
+      if (this.agents.has(agentId)) {
+        continue;
+      }
+
+      const agent: Agent = {
+        id: agentId,
+        role,
+        sessionName: getSessionName(role),
+        status: 'idle',
+      };
+
+      // Create tmux session (Claude CLI is launched lazily when needed)
+      await this.sessionManager.createAgentSession(agent, {
+        launchClaude: false,
+        workingDirectory: this.config.workspaceRoot,
+        sessionId: crypto.randomUUID(),
+      });
+
+      this.agents.set(agentId, agent);
+      logger.info({ agentId, role }, 'Resumed agent created');
+    }
+  }
+
+  /**
+   * Process existing pending artifacts to trigger agent work
+   * @private
+   */
+  private async processPendingArtifacts(
+    pendingArtifacts: Map<import('../types/stage.types.js').StageName, string[]>
+  ): Promise<void> {
+    logger.info('Processing pending artifacts to trigger agent work');
+
+    // Process artifacts in stage order (spec -> arch -> tasks/tests -> impl -> review -> docs)
+    const stageOrder: import('../types/stage.types.js').StageName[] = [
+      'spec', 'arch', 'tasks', 'tests', 'impl', 'review', 'docs'
+    ];
+
+    for (const stageName of stageOrder) {
+      const artifacts = pendingArtifacts.get(stageName);
+      if (!artifacts || artifacts.length === 0) {
+        continue;
+      }
+
+      logger.info({ stageName, count: artifacts.length }, 'Found pending artifacts in stage');
+
+      // Emit artifact:created events for each pending artifact
+      // This will trigger the normal handleArtifactCreated flow
+      for (const artifactPath of artifacts) {
+        const event: WorkflowEvent = {
+          type: 'artifact:created',
+          timestamp: new Date(),
+          payload: {
+            artifactPath,
+            stageName,
+          },
+        };
+
+        // Handle the artifact (this will create agents and send instructions)
+        await this.handleArtifactCreated(event);
+      }
+    }
+
+    logger.info('Finished processing pending artifacts');
   }
 
   /**

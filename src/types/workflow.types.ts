@@ -84,3 +84,28 @@ export interface AgentPayload {
   role: string;
   error?: string;
 }
+
+/**
+ * State detected when attempting to resume a workflow
+ */
+export interface ResumeState {
+  hasPendingWork: boolean;
+  featureName: string | null;
+  featureSlug: string | null;
+  resumeFromState: WorkflowState;
+  pendingArtifacts: Map<import('./stage.types.js').StageName, string[]>;
+  staleLocksCleanedUp: number;
+  requiredAgents: import('./agent.types.js').AgentRole[];
+}
+
+/**
+ * Result of attempting to resume a workflow
+ */
+export interface ResumeResult {
+  success: boolean;
+  reason?: 'no_pending_work' | 'no_feature_name';
+  message?: string;
+  featureName?: string;
+  resumeFromState?: WorkflowState;
+  staleLocksCleanedUp?: number;
+}
