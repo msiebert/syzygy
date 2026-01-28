@@ -739,6 +739,102 @@ export interface ClaudeCLIInPaneResult {
 }
 
 /**
+ * Check if Claude CLI is running in a tmux session
+ * Captures the pane output and checks for Claude indicators
+ */
+export async function isClaudeRunningInSession(sessionName: SessionName): Promise<boolean> {
+  logger.debug({ sessionName }, 'Checking if Claude is running in session');
+
+  try {
+    const output = await capturePane(sessionName);
+    const isRunning = isClaudeReady(output);
+    logger.debug({ sessionName, isRunning }, 'Claude running check complete');
+    return isRunning;
+  } catch (error) {
+    // Session might not exist or other error - Claude is not running
+    logger.debug({ sessionName, error }, 'Error checking Claude status, assuming not running');
+    return false;
+  }
+}
+
+/**
+ * Options for ensuring Claude is running in a session
+ */
+export interface EnsureClaudeRunningOptions {
+  /** System prompt content (not a file path) */
+  systemPrompt: string;
+  /** Working directory for Claude */
+  workingDirectory: string;
+  /** Session ID for Claude */
+  sessionId: string;
+  /** Callback for progress updates */
+  onProgress?: (elapsed: number) => void;
+  /** Callback when Claude is ready */
+  onReady?: () => void;
+  /** Callback on error */
+  onError?: (error: Error) => void;
+}
+
+/**
+ * Ensure Claude CLI is running in a session.
+ * If Claude is already running, returns immediately.
+ * If not, launches Claude and waits for it to be ready.
+ */
+export async function ensureClaudeRunning(
+  sessionName: SessionName,
+  options: EnsureClaudeRunningOptions
+): Promise<void> {
+  logger.info({ sessionName }, 'Ensuring Claude is running in session');
+
+  // First check if Claude is already running
+  const alreadyRunning = await isClaudeRunningInSession(sessionName);
+  if (alreadyRunning) {
+    logger.info({ sessionName }, 'Claude already running in session');
+    options.onReady?.();
+    return;
+  }
+
+  logger.info({ sessionName }, 'Claude not running, launching...');
+
+  // Change to working directory
+  await sendKeys(sessionName, `cd ${escapeShellArg(options.workingDirectory)}`);
+  await new Promise(resolve => setTimeout(resolve, 500));
+
+  // Build and send the Claude command
+  const claudeCommand = `claude --append-system-prompt ${escapeShellArg(options.systemPrompt)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+  await sendKeys(sessionName, claudeCommand);
+
+  // Wait for Claude to be ready
+  const maxAttempts = 90; // 90 seconds timeout
+  for (let i = 0; i < maxAttempts; i++) {
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    options.onProgress?.(i + 1);
+
+    try {
+      const output = await capturePane(sessionName);
+      if (isClaudeReady(output)) {
+        logger.info({ sessionName, attempt: i + 1 }, 'Claude is now ready in session');
+        options.onReady?.();
+        return;
+      }
+    } catch {
+      // Ignore capture errors during polling, continue trying
+    }
+  }
+
+  // Timeout
+  const err = new TmuxError(
+    'Claude CLI failed to initialize within timeout',
+    claudeCommand,
+    undefined,
+    `Timeout after ${maxAttempts}s`
+  );
+  logger.error({ sessionName, timeout: maxAttempts }, 'Claude CLI initialization timeout');
+  options.onError?.(err);
+  throw err;
+}
+
+/**
  * Launch Claude CLI in a split pane.
  * Creates a new pane and runs Claude directly in it, bypassing the detached session issue.
  * This is the preferred method when running inside tmux.

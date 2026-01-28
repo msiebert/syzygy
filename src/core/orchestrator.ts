@@ -31,6 +31,7 @@ import {
   isInsideTmux,
   launchClaudeCLIInPane,
   closePane,
+  ensureClaudeRunning,
   type PaneId,
 } from '../utils/tmux-utils.js';
 import { openPMInPane } from '../utils/terminal-window.js';
@@ -629,6 +630,7 @@ export class Orchestrator {
 
   /**
    * Send instruction to an agent
+   * Ensures Claude is running in the agent's session before sending
    * @private
    */
   private async sendInstructionToAgent(
@@ -640,6 +642,30 @@ export class Orchestrator {
       throw new Error(`Agent ${agentId} not found`);
     }
 
+    // Generate the system prompt for this agent (used if Claude needs to be launched)
+    const systemPrompt = generateInstructions(agent.role, context);
+
+    // Ensure Claude is running in the session before sending instructions
+    // This handles the lazy initialization of non-PM agents
+    logger.info({ agentId, role: agent.role }, 'Ensuring Claude is running before sending instruction');
+    await ensureClaudeRunning(agent.sessionName, {
+      systemPrompt,
+      workingDirectory: this.config.workspaceRoot,
+      sessionId: `syzygy-${agent.role}-${crypto.randomUUID()}`,
+      onProgress: (elapsed) => {
+        if (elapsed % 15 === 0) {
+          logger.info({ agentId, elapsed }, 'Waiting for Claude to initialize...');
+        }
+      },
+      onReady: () => {
+        logger.info({ agentId }, 'Claude ready in session');
+      },
+      onError: (error) => {
+        logger.error({ agentId, error }, 'Failed to initialize Claude in session');
+      },
+    });
+
+    // Now send the actual instruction (the task-specific context)
     const instruction = generateInstructions(agent.role, context);
     await this.agentRunner.sendInstruction(agent.sessionName, instruction);
 
