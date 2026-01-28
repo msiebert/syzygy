@@ -18,6 +18,26 @@
 - Not a microservices architecture
 - Not a database-backed system
 
+## Environment Setup
+
+### Bun Runtime
+This project uses Bun as its JavaScript/TypeScript runtime. Bun is installed at:
+- **Path**: `~/.bun/bin/bun`
+- **Full path**: `/Users/marksiebert/.bun/bin/bun`
+
+To run bun commands:
+```bash
+~/.bun/bin/bun run dev        # Start development server
+~/.bun/bin/bun run test       # Run tests
+~/.bun/bin/bun run typecheck  # TypeScript check
+~/.bun/bin/bun run build      # Build for production
+```
+
+Or use npx as fallback for TypeScript:
+```bash
+npx tsc --noEmit  # TypeScript check without bun
+```
+
 ## Philosophy
 
 ### Core Principles

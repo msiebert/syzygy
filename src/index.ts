@@ -98,11 +98,6 @@ async function handleNewFeature(): Promise<void> {
         await new Promise(resolve => setTimeout(resolve, 500));
       }
     } finally {
-      // Ensure stdin is restored to normal mode
-      if (process.stdin.setRawMode) {
-        process.stdin.setRawMode(false);
-      }
-
       await orchestrator.stopWorkflow();
     }
 

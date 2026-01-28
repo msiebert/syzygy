@@ -22,7 +22,18 @@ import {
   type InstructionContext,
 } from '../agents/agent-instructions.js';
 import { createModuleLogger } from '@utils/logger';
-import { sendKeysRaw, sendSpecialKey } from '../utils/tmux-utils.js';
+import {
+  sendKeysRaw,
+  sendSpecialKey,
+  sendKeysRawToPane,
+  sendSpecialKeyToPane,
+  killSessions,
+  isInsideTmux,
+  launchClaudeCLIInPane,
+  closePane,
+  type PaneId,
+} from '../utils/tmux-utils.js';
+import { openPMInPane } from '../utils/terminal-window.js';
 import path from 'path';
 
 const logger = createModuleLogger('orchestrator');
@@ -49,6 +60,7 @@ export class Orchestrator {
   private splitScreen?: SplitScreenController;
   private pmTimeout: NodeJS.Timeout | undefined;
   private pmInitResult: { waitForReady: () => Promise<void>; abort: () => void } | undefined = undefined;
+  private pmPaneId: PaneId | null = null;
 
   constructor(config: OrchestratorConfig = {}) {
     this.config = {
@@ -78,6 +90,9 @@ export class Orchestrator {
     logger.info({ featureName, initialPrompt }, 'Starting workflow');
 
     try {
+      // Clean up any orphaned sessions from previous runs
+      await killSessions('syzygy-.*');
+
       // Initialize workflow engine
       this.workflowEngine = new WorkflowEngine(featureName, initialPrompt);
 
@@ -272,27 +287,61 @@ export class Orchestrator {
       if (config.role === 'product-manager') {
         this.splitScreen?.updateInitProgress(agent.id, 'initializing', 0);
 
-        // Create tmux session with async Claude CLI initialization
-        const result = await this.sessionManager.createAgentSessionAsync(agent, {
-          launchClaude: true,
-          systemPrompt,
-          workingDirectory: this.config.workspaceRoot,
-          sessionId: crypto.randomUUID(),
-        }, {
-          onProgress: (agentId, elapsed) => {
-            this.splitScreen?.updateInitProgress(agentId, 'initializing', elapsed);
-          },
-          onReady: (agentId) => {
-            this.splitScreen?.updateInitProgress(agentId, 'ready', 0);
-            this.onPMReady();
-          },
-          onError: (agentId) => {
-            this.splitScreen?.updateInitProgress(agentId, 'error', 0);
-          },
-        });
+        if (isInsideTmux()) {
+          // Inside tmux: Create pane first, then run Claude directly in it.
+          // This avoids the "size missing" issue with detached sessions.
+          logger.info('Running inside tmux - using pane-based PM launch');
 
-        // Store the init result so we can abort if needed
-        this.pmInitResult = result.claudeInit;
+          const result = await launchClaudeCLIInPane({
+            systemPrompt,
+            workingDirectory: this.config.workspaceRoot,
+            sessionId: crypto.randomUUID(),
+            direction: 'horizontal',
+            percentage: 50,
+          }, {
+            onProgress: (elapsed) => {
+              this.splitScreen?.updateInitProgress(agent.id, 'initializing', elapsed);
+            },
+            onReady: () => {
+              this.splitScreen?.updateInitProgress(agent.id, 'ready', 0);
+              this.onPMReady();
+            },
+            onError: () => {
+              this.splitScreen?.updateInitProgress(agent.id, 'error', 0);
+            },
+          });
+
+          // Store the pane ID for cleanup and the init result for abort
+          this.pmPaneId = result.paneId;
+          this.pmInitResult = { waitForReady: result.waitForReady, abort: result.abort };
+
+          // PM is already visible in the split pane - no need for openPMTerminalWindow
+          logger.info({ paneId: result.paneId }, 'PM launched in split pane');
+        } else {
+          // Not inside tmux: Use the session-based approach with manual attach instructions
+          logger.info('Not running inside tmux - using session-based PM launch');
+
+          const result = await this.sessionManager.createAgentSessionAsync(agent, {
+            launchClaude: true,
+            systemPrompt,
+            workingDirectory: this.config.workspaceRoot,
+            sessionId: crypto.randomUUID(),
+          }, {
+            onProgress: (agentId, elapsed) => {
+              this.splitScreen?.updateInitProgress(agentId, 'initializing', elapsed);
+            },
+            onReady: (agentId) => {
+              this.splitScreen?.updateInitProgress(agentId, 'ready', 0);
+              this.onPMReady();
+            },
+            onError: (agentId) => {
+              this.splitScreen?.updateInitProgress(agentId, 'error', 0);
+            },
+          });
+
+          // Store the init result so we can abort if needed
+          this.pmInitResult = result.claudeInit;
+        }
       } else {
         // Non-PM agents: just create tmux session (no Claude CLI)
         await this.sessionManager.createAgentSession(agent, {
@@ -320,25 +369,26 @@ export class Orchestrator {
 
     // Get PM agent
     const pmAgent = this.agents.get('product-manager');
-    if (!pmAgent || !this.workflowEngine) return;
+    if (!this.workflowEngine) return;
 
-    // Create PM monitor
-    this.pmMonitor = new PMMonitor(pmAgent.sessionName, {
-      pollInterval: 200, // 200ms for low latency
-      featureName: this.workflowEngine.getFeatureName(),
-      featureSlug: this.workflowEngine.getFeatureSlug(),
-      onNewMessage: (message) => {
-        this.splitScreen?.addChatMessage('pm', message);
-      },
-      onSpecComplete: () => {
-        void this.handleSpecComplete();
-      },
-    });
+    // Create PM monitor (simplified - just watches for spec file)
+    // Note: When using pane-based approach, pmAgent may not have a session,
+    // but we still need to monitor for the spec file
+    if (pmAgent) {
+      this.pmMonitor = new PMMonitor(pmAgent.sessionName, {
+        pollInterval: 1000, // 1s polling for spec file detection
+        featureName: this.workflowEngine.getFeatureName(),
+        featureSlug: this.workflowEngine.getFeatureSlug(),
+        onSpecComplete: () => {
+          void this.handleSpecComplete();
+        },
+      });
 
-    // Start PM monitoring
-    this.pmMonitor.startPolling().catch(() => {
-      // Ignore polling start errors
-    });
+      // Start PM monitoring
+      this.pmMonitor.startPolling().catch(() => {
+        // Ignore polling start errors
+      });
+    }
 
     // Set 30-minute timeout for PM interaction
     this.pmTimeout = setTimeout(() => {
@@ -348,15 +398,38 @@ export class Orchestrator {
     // Send initial prompt to PM to kick off the conversation
     void this.sendInitialPromptToPM();
 
-    // Enable interactive mode for PM chat
-    this.splitScreen?.enableInteractiveMode(
-      (char) => {
-        void this.forwardInputToPM(char);
-      },
-      () => {
-        void this.handlePMEarlyExit();
+    // If we're inside tmux, the PM pane is already open (via launchClaudeCLIInPane).
+    // Only try to open a separate window if we're NOT inside tmux.
+    if (!isInsideTmux() && pmAgent) {
+      void this.openPMTerminalWindow(pmAgent.sessionName);
+    } else if (this.pmPaneId) {
+      // PM pane is already open - just update the UI
+      this.splitScreen?.setPMTerminalOpened();
+      logger.info({ paneId: this.pmPaneId }, 'PM pane already open');
+    }
+  }
+
+  /**
+   * Open PM session in a tmux pane (same terminal)
+   * @private
+   */
+  private async openPMTerminalWindow(sessionName: string): Promise<void> {
+    try {
+      const result = await openPMInPane(sessionName as import('../types/agent.types.js').SessionName);
+
+      if (result.opened && result.paneId) {
+        this.pmPaneId = result.paneId;
+        this.splitScreen?.setPMTerminalOpened();
+        logger.info({ sessionName, paneId: result.paneId }, 'PM pane opened');
+      } else {
+        // Failed to open PM pane - show instructions for manual attach
+        logger.warn({ sessionName }, 'Failed to open PM pane, manual attach required');
+        this.splitScreen?.showManualAttachInstructions(result.manualAttachCommand ?? `tmux attach -t ${sessionName}`);
       }
-    );
+    } catch (error) {
+      logger.error({ error, sessionName }, 'Failed to open PM pane');
+      // Don't throw - the user can still manually attach to the tmux session
+    }
   }
 
   /**
@@ -364,8 +437,7 @@ export class Orchestrator {
    * @private
    */
   private async sendInitialPromptToPM(): Promise<void> {
-    const pmAgent = this.agents.get('product-manager');
-    if (!pmAgent || !this.workflowEngine) return;
+    if (!this.workflowEngine) return;
 
     const initialPrompt = this.workflowEngine.getInitialPrompt();
     if (!initialPrompt) {
@@ -375,9 +447,23 @@ export class Orchestrator {
 
     try {
       logger.info({ initialPrompt }, 'Sending initial prompt to PM');
-      await sendKeysRaw(pmAgent.sessionName, initialPrompt);
-      await sendSpecialKey(pmAgent.sessionName, 'Enter');
-      logger.info('Initial prompt sent to PM successfully');
+
+      // If we have a pane ID (pane-based approach), send to pane.
+      // Otherwise, use the session-based approach.
+      if (this.pmPaneId) {
+        await sendKeysRawToPane(this.pmPaneId, initialPrompt);
+        await sendSpecialKeyToPane(this.pmPaneId, 'Enter');
+        logger.info({ paneId: this.pmPaneId }, 'Initial prompt sent to PM pane successfully');
+      } else {
+        const pmAgent = this.agents.get('product-manager');
+        if (!pmAgent) {
+          logger.warn('No PM agent found');
+          return;
+        }
+        await sendKeysRaw(pmAgent.sessionName, initialPrompt);
+        await sendSpecialKey(pmAgent.sessionName, 'Enter');
+        logger.info('Initial prompt sent to PM session successfully');
+      }
     } catch (error) {
       logger.error({ error }, 'Failed to send initial prompt to PM');
     }
@@ -626,27 +712,6 @@ export class Orchestrator {
   }
 
   /**
-   * Forward user input to PM tmux session
-   * @private
-   */
-  private async forwardInputToPM(char: string): Promise<void> {
-    const pmAgent = this.agents.get('product-manager');
-    if (!pmAgent) return;
-
-    try {
-      if (char === '\n') {
-        await sendSpecialKey(pmAgent.sessionName, 'Enter');
-      } else if (char === '\x7f') {
-        await sendSpecialKey(pmAgent.sessionName, 'BSpace');
-      } else {
-        await sendKeysRaw(pmAgent.sessionName, char);
-      }
-    } catch (error) {
-      logger.error({ error }, 'Failed to forward input to PM');
-    }
-  }
-
-  /**
    * Handle spec completion
    * @private
    */
@@ -658,9 +723,6 @@ export class Orchestrator {
       clearTimeout(this.pmTimeout);
       this.pmTimeout = undefined;
     }
-
-    // Disable interactive mode
-    this.splitScreen?.disableInteractiveMode();
 
     // Stop PM monitoring
     this.pmMonitor?.stopPolling();
@@ -683,40 +745,10 @@ export class Orchestrator {
 
     // Stop PM monitoring
     this.pmMonitor?.stopPolling();
-    this.splitScreen?.disableInteractiveMode();
 
     // For now, just log and continue
     // TODO: Add user prompt for action (continue/restart/abort)
     logger.warn('PM timeout handling not fully implemented - continuing');
-  }
-
-  /**
-   * Handle user exiting interactive mode early
-   * @private
-   */
-  private async handlePMEarlyExit(): Promise<void> {
-    logger.info('User exited PM interactive mode');
-
-    // Check if spec exists
-    if (!this.workflowEngine) return;
-
-    const featureSlug = this.workflowEngine.getFeatureSlug();
-    const specPath = `.syzygy/stages/spec/pending/${featureSlug}-spec.md`;
-
-    try {
-      const { access } = await import('node:fs/promises');
-      await access(specPath);
-
-      // Spec exists, continue workflow
-      logger.info('Spec file exists, continuing workflow');
-      await this.handleSpecComplete();
-    } catch {
-      // Spec doesn't exist, prompt user
-      logger.warn('Spec incomplete, user exited early');
-      // TODO: Add user prompt for action (reattach/abort)
-      logger.warn('Early exit handling not fully implemented - aborting');
-      await this.stopWorkflow();
-    }
   }
 
   /**
@@ -741,6 +773,17 @@ export class Orchestrator {
 
       // Stop PM monitoring
       this.pmMonitor?.stopPolling();
+
+      // Close PM pane if it was opened
+      if (this.pmPaneId) {
+        try {
+          await closePane(this.pmPaneId);
+          logger.debug({ paneId: this.pmPaneId }, 'PM pane closed');
+        } catch (error) {
+          logger.warn({ error, paneId: this.pmPaneId }, 'Failed to close PM pane');
+        }
+        this.pmPaneId = null;
+      }
 
       // Stop split screen
       this.splitScreen?.stop();

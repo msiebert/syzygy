@@ -11,6 +11,163 @@ import { readFile } from 'node:fs/promises';
 
 const logger = createModuleLogger('tmux-utils');
 
+/**
+ * Branded type for tmux pane IDs
+ */
+export type PaneId = string & { readonly __brand: 'PaneId' };
+
+/**
+ * Check if currently running inside tmux
+ */
+export function isInsideTmux(): boolean {
+  return !!process.env['TMUX'];
+}
+
+/**
+ * Get current tmux pane ID (when running inside tmux)
+ */
+export function getCurrentPane(): PaneId | null {
+  const paneId = process.env['TMUX_PANE'];
+  return paneId ? (paneId as PaneId) : null;
+}
+
+/**
+ * Split current pane and run command in new pane
+ * @param direction - 'horizontal' splits side-by-side, 'vertical' splits top-bottom
+ * @param command - Command to run in the new pane
+ * @param percentage - Percentage of space for new pane (default 50)
+ * @returns The new pane ID
+ */
+export async function splitPaneWithCommand(
+  direction: 'horizontal' | 'vertical',
+  command: string,
+  percentage = 50
+): Promise<PaneId> {
+  logger.info({ direction, command, percentage }, 'Splitting pane with command');
+
+  const directionFlag = direction === 'horizontal' ? '-h' : '-v';
+
+  try {
+    // Split pane and get new pane ID
+    // -P prints pane info, -F format string to get pane ID
+    const output = await execTmux([
+      'split-window',
+      directionFlag,
+      '-p', percentage.toString(),
+      '-P',
+      '-F', '#{pane_id}',
+      command,
+    ]);
+
+    const paneId = output.trim() as PaneId;
+    logger.info({ paneId, direction, command }, 'Pane split successfully');
+    return paneId;
+  } catch (error) {
+    logger.error({ error, direction, command }, 'Failed to split pane');
+    throw error;
+  }
+}
+
+/**
+ * Join a pane from another session into the current window
+ * This moves the target session's pane into the current session's layout
+ *
+ * @param sourceSession - The session to take a pane from
+ * @param direction - 'horizontal' splits side-by-side, 'vertical' splits top-bottom
+ * @param percentage - Percentage of space for the joined pane (default 50)
+ * @returns The new pane ID in the current session
+ */
+export async function joinPaneFromSession(
+  sourceSession: SessionName,
+  direction: 'horizontal' | 'vertical',
+  percentage = 50
+): Promise<PaneId> {
+  logger.info({ sourceSession, direction, percentage }, 'Joining pane from session');
+
+  const directionFlag = direction === 'horizontal' ? '-h' : '-v';
+
+  try {
+    // Join pane from source session (window 0, pane 0) into current window
+    // Note: join-pane doesn't support -P flag like split-window does
+    await execTmux([
+      'join-pane',
+      '-s', `${sourceSession}:0.0`,  // Source: first pane of first window
+      directionFlag,
+      '-p', percentage.toString(),
+    ]);
+
+    // Get the pane ID of the newly joined pane
+    // After join-pane, the joined pane becomes the active pane
+    const output = await execTmux([
+      'display-message',
+      '-p', '#{pane_id}',
+    ]);
+
+    const paneId = output.trim() as PaneId;
+    logger.info({ paneId, sourceSession, direction }, 'Pane joined successfully');
+    return paneId;
+  } catch (error) {
+    logger.error({ error, sourceSession, direction }, 'Failed to join pane');
+    throw error;
+  }
+}
+
+/**
+ * Split current pane and attach to another session in the new pane
+ * This is more reliable than join-pane for detached sessions
+ *
+ * @param targetSession - The session to attach to in the new pane
+ * @param direction - 'horizontal' splits side-by-side, 'vertical' splits top-bottom
+ * @param percentage - Percentage of space for the new pane (default 50)
+ * @returns The new pane ID
+ */
+export async function splitAndAttachSession(
+  targetSession: SessionName,
+  direction: 'horizontal' | 'vertical',
+  percentage = 50
+): Promise<PaneId> {
+  logger.info({ targetSession, direction, percentage }, 'Splitting pane and attaching session');
+
+  const directionFlag = direction === 'horizontal' ? '-h' : '-v';
+
+  try {
+    const output = await execTmux([
+      'split-window',
+      directionFlag,
+      '-p', percentage.toString(),
+      '-P',
+      '-F', '#{pane_id}',
+      `tmux attach -t ${targetSession}`,
+    ]);
+
+    const paneId = output.trim() as PaneId;
+    logger.info({ paneId, targetSession, direction }, 'Pane split and attached successfully');
+    return paneId;
+  } catch (error) {
+    logger.error({ error, targetSession, direction }, 'Failed to split and attach');
+    throw error;
+  }
+}
+
+/**
+ * Close a specific pane by ID
+ */
+export async function closePane(paneId: PaneId): Promise<void> {
+  logger.info({ paneId }, 'Closing pane');
+
+  try {
+    await execTmux(['kill-pane', '-t', paneId]);
+    logger.info({ paneId }, 'Pane closed successfully');
+  } catch (error) {
+    if (error instanceof TmuxError && error.stderr?.includes("can't find pane")) {
+      logger.warn({ paneId }, 'Pane does not exist, ignoring');
+      return;
+    }
+    logger.error({ paneId, error }, 'Failed to close pane');
+    throw error;
+  }
+}
+
 export class TmuxError extends Error {
   constructor(
     message: string,
@@ -171,6 +328,28 @@ export async function capturePane(sessionName: SessionName): Promise<string> {
 }
 
 /**
+ * Capture pane content by pane ID (not session name)
+ */
+export async function capturePaneById(paneId: PaneId): Promise<string> {
+  logger.debug({ paneId }, 'Capturing pane content by ID');
+
+  try {
+    const output = await execTmux([
+      'capture-pane',
+      '-t', paneId,
+      '-p', // print to stdout
+      '-J', // join wrapped lines
+      '-S', '-50', // last 50 lines only
+    ]);
+    logger.debug({ paneId, lines: output.split('\n').length }, 'Pane captured');
+    return output;
+  } catch (error) {
+    logger.error({ paneId, error }, 'Failed to capture pane by ID');
+    throw error;
+  }
+}
+
+/**
  * List all tmux sessions matching a pattern
  */
 export async function listSessions(pattern?: string): Promise<string[]> {
@@ -287,6 +466,51 @@ export async function sendSpecialKey(
     logger.debug({ sessionName, key }, 'Special key sent successfully');
   } catch (error) {
     logger.error({ sessionName, key, error }, 'Failed to send special key');
+    throw error;
+  }
+}
+
+/**
+ * Send raw keys to a pane by ID without automatic Enter
+ */
+export async function sendKeysRawToPane(
+  paneId: PaneId,
+  keys: string
+): Promise<void> {
+  logger.debug({ paneId, keys }, 'Sending raw keys to pane');
+
+  try {
+    await execTmux([
+      'send-keys',
+      '-t', paneId,
+      '-l', // literal flag - send exact characters
+      keys,
+    ]);
+    logger.debug({ paneId }, 'Raw keys sent to pane successfully');
+  } catch (error) {
+    logger.error({ paneId, error }, 'Failed to send raw keys to pane');
+    throw error;
+  }
+}
+
+/**
+ * Send special key to a pane by ID
+ */
+export async function sendSpecialKeyToPane(
+  paneId: PaneId,
+  key: 'Enter' | 'BSpace' | 'C-c' | 'Escape'
+): Promise<void> {
+  logger.debug({ paneId, key }, 'Sending special key to pane');
+
+  try {
+    await execTmux([
+      'send-keys',
+      '-t', paneId,
+      key,
+    ]);
+    logger.debug({ paneId, key }, 'Special key sent to pane successfully');
+  } catch (error) {
+    logger.error({ paneId, key, error }, 'Failed to send special key to pane');
     throw error;
   }
 }
@@ -475,4 +699,107 @@ export async function launchClaudeCLI(
     logger.error({ sessionName, error }, 'Failed to launch Claude CLI');
     throw error;
   }
+}
+
+/**
+ * Options for launching Claude CLI in a pane
+ */
+export interface ClaudeCLIInPaneOptions {
+  /** System prompt content (not a file path) */
+  systemPrompt: string;
+  /** Working directory for Claude */
+  workingDirectory: string;
+  /** Session ID for Claude */
+  sessionId: string;
+  /** Split direction ('horizontal' = side-by-side, 'vertical' = top-bottom) */
+  direction?: 'horizontal' | 'vertical';
+  /** Percentage of space for the new pane */
+  percentage?: number;
+}
+
+/**
+ * Callbacks for Claude CLI in pane initialization
+ */
+export interface ClaudeCLIInPaneCallbacks {
+  onProgress?: (elapsed: number) => void;
+  onReady?: () => void;
+  onError?: (error: Error) => void;
+}
+
+/**
+ * Result of launching Claude CLI in a pane
+ */
+export interface ClaudeCLIInPaneResult {
+  /** The pane ID where Claude is running */
+  paneId: PaneId;
+  /** Promise that resolves when Claude is ready */
+  waitForReady: () => Promise<void>;
+  /** Abort the readiness polling */
+  abort: () => void;
+}
+
+/**
+ * Launch Claude CLI in a split pane.
+ * Creates a new pane and runs Claude directly in it, bypassing the detached session issue.
+ * This is the preferred method when running inside tmux.
+ */
+export async function launchClaudeCLIInPane(
+  options: ClaudeCLIInPaneOptions,
+  callbacks?: ClaudeCLIInPaneCallbacks
+): Promise<ClaudeCLIInPaneResult> {
+  const direction = options.direction ?? 'horizontal';
+  const percentage = options.percentage ?? 50;
+
+  logger.info({ direction, percentage, workingDirectory: options.workingDirectory }, 'Launching Claude CLI in pane');
+
+  // Build the Claude command
+  const claudeCommand = `cd ${escapeShellArg(options.workingDirectory)} && claude --append-system-prompt ${escapeShellArg(options.systemPrompt)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+
+  // Split pane and run Claude directly - the pane has dimensions immediately
+  const paneId = await splitPaneWithCommand(direction, claudeCommand, percentage);
+  logger.info({ paneId, direction }, 'Claude CLI pane created');
+
+  // Background polling for readiness
+  let aborted = false;
+  const readyPromise = new Promise<void>((resolve, reject) => {
+    (async () => {
+      const maxAttempts = 90; // 90 seconds timeout
+      for (let i = 0; i < maxAttempts && !aborted; i++) {
+        await new Promise(r => setTimeout(r, 1000));
+        callbacks?.onProgress?.(i + 1);
+
+        try {
+          const output = await capturePaneById(paneId);
+          if (isClaudeReady(output)) {
+            logger.info({ paneId, attempt: i + 1 }, 'Claude CLI ready in pane');
+            callbacks?.onReady?.();
+            resolve();
+            return;
+          }
+        } catch {
+          // Ignore capture errors during polling, continue trying
+        }
+      }
+
+      if (!aborted) {
+        const err = new TmuxError(
+          'Claude CLI failed to initialize in pane',
+          claudeCommand,
+          undefined,
+          `Timeout after ${maxAttempts}s`
+        );
+        logger.error({ paneId, timeout: maxAttempts }, 'Claude CLI initialization timeout in pane');
+        callbacks?.onError?.(err);
+        reject(err);
+      }
+    })();
+  });
+
+  return {
+    paneId,
+    waitForReady: () => readyPromise,
+    abort: () => {
+      aborted = true;
+    },
+  };
 }
