@@ -7,7 +7,10 @@ import type { SessionName } from '../types/agent.types.js';
 import { toAgentId, toSessionName } from '../types/agent.types.js';
 import { createModuleLogger } from '@utils/logger';
 import { escapeShellArg } from '@utils/sanitize';
-import { readFile } from 'node:fs/promises';
+import { writeFile, unlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { randomUUID } from 'node:crypto';
 
 const logger = createModuleLogger('tmux-utils');
 
@@ -559,11 +562,9 @@ export async function launchClaudeCLIAsync(
   await sendKeys(sessionName, `cd ${escapeShellArg(options.workingDirectory)}`);
   await new Promise(resolve => setTimeout(resolve, 500));
 
-  // Read system prompt file content - --append-system-prompt requires inline text, not a file path
-  const promptContent = await readFile(options.systemPromptPath, 'utf-8');
-
-  // Launch Claude CLI with system prompt (use --append-system-prompt to preserve built-in capabilities)
-  const claudeCommand = `claude --append-system-prompt ${escapeShellArg(promptContent)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+  // Use command substitution to read prompt from file - avoids command line length issues
+  // The file is read at shell execution time, not embedded in the command
+  const claudeCommand = `claude --append-system-prompt "\$(cat ${escapeShellArg(options.systemPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
   await sendKeys(sessionName, claudeCommand);
 
   // Return immediately, poll in background
@@ -629,11 +630,9 @@ export async function launchClaudeCLI(
     // Wait longer for cd to complete and verify
     await new Promise(resolve => setTimeout(resolve, 500));
 
-    // Read system prompt file content - --append-system-prompt requires inline text, not a file path
-    const promptContent = await readFile(options.systemPromptPath, 'utf-8');
-
-    // Launch Claude CLI with system prompt (use --append-system-prompt to preserve built-in capabilities)
-    const claudeCommand = `claude --append-system-prompt ${escapeShellArg(promptContent)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+    // Use command substitution to read prompt from file - avoids command line length issues
+    // The file is read at shell execution time, not embedded in the command
+    const claudeCommand = `claude --append-system-prompt "\$(cat ${escapeShellArg(options.systemPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
     await sendKeys(sessionName, claudeCommand);
 
     // Wait for Claude to initialize (poll for prompt)
@@ -796,42 +795,51 @@ export async function ensureClaudeRunning(
 
   logger.info({ sessionName }, 'Claude not running, launching...');
 
+  // Write system prompt to temp file to avoid command line length issues
+  const tempPromptPath = join(tmpdir(), `syzygy-prompt-${randomUUID()}.md`);
+  await writeFile(tempPromptPath, options.systemPrompt, 'utf-8');
+
   // Change to working directory
   await sendKeys(sessionName, `cd ${escapeShellArg(options.workingDirectory)}`);
   await new Promise(resolve => setTimeout(resolve, 500));
 
-  // Build and send the Claude command
-  const claudeCommand = `claude --append-system-prompt ${escapeShellArg(options.systemPrompt)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+  // Build and send the Claude command using command substitution
+  const claudeCommand = `claude --append-system-prompt "\$(cat ${escapeShellArg(tempPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
   await sendKeys(sessionName, claudeCommand);
 
   // Wait for Claude to be ready
   const maxAttempts = 90; // 90 seconds timeout
-  for (let i = 0; i < maxAttempts; i++) {
-    await new Promise(resolve => setTimeout(resolve, 1000));
-    options.onProgress?.(i + 1);
+  try {
+    for (let i = 0; i < maxAttempts; i++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      options.onProgress?.(i + 1);
 
-    try {
-      const output = await capturePane(sessionName);
-      if (isClaudeReady(output)) {
-        logger.info({ sessionName, attempt: i + 1 }, 'Claude is now ready in session');
-        options.onReady?.();
-        return;
+      try {
+        const output = await capturePane(sessionName);
+        if (isClaudeReady(output)) {
+          logger.info({ sessionName, attempt: i + 1 }, 'Claude is now ready in session');
+          options.onReady?.();
+          return;
+        }
+      } catch {
+        // Ignore capture errors during polling, continue trying
       }
-    } catch {
-      // Ignore capture errors during polling, continue trying
     }
-  }
 
-  // Timeout
-  const err = new TmuxError(
-    'Claude CLI failed to initialize within timeout',
-    claudeCommand,
-    undefined,
-    `Timeout after ${maxAttempts}s`
-  );
-  logger.error({ sessionName, timeout: maxAttempts }, 'Claude CLI initialization timeout');
-  options.onError?.(err);
-  throw err;
+    // Timeout
+    const err = new TmuxError(
+      'Claude CLI failed to initialize within timeout',
+      claudeCommand,
+      undefined,
+      `Timeout after ${maxAttempts}s`
+    );
+    logger.error({ sessionName, timeout: maxAttempts }, 'Claude CLI initialization timeout');
+    options.onError?.(err);
+    throw err;
+  } finally {
+    // Clean up temp file
+    await unlink(tempPromptPath).catch(() => {});
+  }
 }
 
 /**
@@ -848,45 +856,66 @@ export async function launchClaudeCLIInPane(
 
   logger.info({ direction, percentage, workingDirectory: options.workingDirectory }, 'Launching Claude CLI in pane');
 
-  // Build the Claude command
-  const claudeCommand = `cd ${escapeShellArg(options.workingDirectory)} && claude --append-system-prompt ${escapeShellArg(options.systemPrompt)} --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+  // Write system prompt to temp file to avoid command line length issues
+  const tempPromptPath = join(tmpdir(), `syzygy-prompt-${randomUUID()}.md`);
+  await writeFile(tempPromptPath, options.systemPrompt, 'utf-8');
 
-  // Split pane and run Claude directly - the pane has dimensions immediately
-  const paneId = await splitPaneWithCommand(direction, claudeCommand, percentage);
-  logger.info({ paneId, direction }, 'Claude CLI pane created');
+  // Create pane with just a shell - no command
+  // This ensures the pane stays open regardless of what happens next
+  // (Unlike command-in-split which exits pane if command fails)
+  const paneId = await splitPaneWithCommand(direction, 'bash', percentage);
+  logger.info({ paneId, direction }, 'Shell pane created');
+
+  // Give shell time to initialize
+  await new Promise(r => setTimeout(r, 500));
+
+  // Send cd command via keystrokes (like ensureClaudeRunning does for sessions)
+  await sendKeysRawToPane(paneId, `cd ${escapeShellArg(options.workingDirectory)}`);
+  await sendSpecialKeyToPane(paneId, 'Enter');
+  await new Promise(r => setTimeout(r, 300));
+
+  // Build and send Claude command via keystrokes
+  const claudeCommand = `claude --append-system-prompt "$(cat ${escapeShellArg(tempPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+  await sendKeysRawToPane(paneId, claudeCommand);
+  await sendSpecialKeyToPane(paneId, 'Enter');
 
   // Background polling for readiness
   let aborted = false;
   const readyPromise = new Promise<void>((resolve, reject) => {
     (async () => {
       const maxAttempts = 90; // 90 seconds timeout
-      for (let i = 0; i < maxAttempts && !aborted; i++) {
-        await new Promise(r => setTimeout(r, 1000));
-        callbacks?.onProgress?.(i + 1);
+      try {
+        for (let i = 0; i < maxAttempts && !aborted; i++) {
+          await new Promise(r => setTimeout(r, 1000));
+          callbacks?.onProgress?.(i + 1);
 
-        try {
-          const output = await capturePaneById(paneId);
-          if (isClaudeReady(output)) {
-            logger.info({ paneId, attempt: i + 1 }, 'Claude CLI ready in pane');
-            callbacks?.onReady?.();
-            resolve();
-            return;
+          try {
+            const output = await capturePaneById(paneId);
+            if (isClaudeReady(output)) {
+              logger.info({ paneId, attempt: i + 1 }, 'Claude CLI ready in pane');
+              callbacks?.onReady?.();
+              resolve();
+              return;
+            }
+          } catch {
+            // Ignore capture errors during polling, continue trying
           }
-        } catch {
-          // Ignore capture errors during polling, continue trying
         }
-      }
 
-      if (!aborted) {
-        const err = new TmuxError(
-          'Claude CLI failed to initialize in pane',
-          claudeCommand,
-          undefined,
-          `Timeout after ${maxAttempts}s`
-        );
-        logger.error({ paneId, timeout: maxAttempts }, 'Claude CLI initialization timeout in pane');
-        callbacks?.onError?.(err);
-        reject(err);
+        if (!aborted) {
+          const err = new TmuxError(
+            'Claude CLI failed to initialize in pane',
+            claudeCommand,
+            undefined,
+            `Timeout after ${maxAttempts}s`
+          );
+          logger.error({ paneId, timeout: maxAttempts }, 'Claude CLI initialization timeout in pane');
+          callbacks?.onError?.(err);
+          reject(err);
+        }
+      } finally {
+        // Clean up temp file
+        await unlink(tempPromptPath).catch(() => {});
       }
     })();
   });

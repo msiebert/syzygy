@@ -2,6 +2,8 @@
  * Agent role types and definitions
  */
 
+import type { PaneId } from '../utils/tmux-utils.js';
+
 // Branded types for compile-time safety
 export type AgentId = string & { readonly __brand: 'AgentId' };
 export type SessionName = string & { readonly __brand: 'SessionName' };
@@ -36,6 +38,7 @@ export interface Agent {
   sessionName: SessionName; // Tmux session name
   status: AgentStatus;     // Current status
   currentTask?: string;    // Path to task file being processed
+  paneId?: PaneId;         // Pane ID when using pane-based approach (inside tmux)
 }
 
 export interface AgentConfig {

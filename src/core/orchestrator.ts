@@ -66,6 +66,8 @@ export class Orchestrator {
   private pmTimeout: NodeJS.Timeout | undefined;
   private pmInitResult: { waitForReady: () => Promise<void>; abort: () => void } | undefined = undefined;
   private pmPaneId: PaneId | null = null;
+  private architectPaneId: PaneId | null = null;
+  private architectInitResult: { waitForReady: () => Promise<void>; abort: () => void } | undefined = undefined;
 
   constructor(config: OrchestratorConfig = {}) {
     this.config = {
@@ -290,12 +292,17 @@ export class Orchestrator {
         status: 'idle',
       };
 
-      // Create tmux session (Claude CLI is launched lazily when needed)
-      await this.sessionManager.createAgentSession(agent, {
-        launchClaude: false,
-        workingDirectory: this.config.workspaceRoot,
-        sessionId: crypto.randomUUID(),
-      });
+      // Architect inside tmux: pane will be created when first instruction is sent
+      if (role === 'architect' && isInsideTmux()) {
+        logger.info('Resumed architect will use pane-based approach (inside tmux)');
+      } else {
+        // Create tmux session (Claude CLI is launched lazily when needed)
+        await this.sessionManager.createAgentSession(agent, {
+          launchClaude: false,
+          workingDirectory: this.config.workspaceRoot,
+          sessionId: crypto.randomUUID(),
+        });
+      }
 
       this.agents.set(agentId, agent);
       logger.info({ agentId, role }, 'Resumed agent created');
@@ -523,8 +530,12 @@ export class Orchestrator {
           // Store the init result so we can abort if needed
           this.pmInitResult = result.claudeInit;
         }
+      } else if (config.role === 'architect' && isInsideTmux()) {
+        // Architect inside tmux: pane will be created when first instruction is sent
+        // This avoids the timeout issue with detached sessions
+        logger.info('Architect will use pane-based approach (inside tmux)');
       } else {
-        // Non-PM agents: just create tmux session (no Claude CLI)
+        // Other agents or architect outside tmux: create detached session
         await this.sessionManager.createAgentSession(agent, {
           launchClaude: false,
           systemPrompt,
@@ -825,29 +836,74 @@ export class Orchestrator {
     // Generate the system prompt for this agent (used if Claude needs to be launched)
     const systemPrompt = generateInstructions(agent.role, context);
 
-    // Ensure Claude is running in the session before sending instructions
-    // This handles the lazy initialization of non-PM agents
-    logger.info({ agentId, role: agent.role }, 'Ensuring Claude is running before sending instruction');
-    await ensureClaudeRunning(agent.sessionName, {
-      systemPrompt,
-      workingDirectory: this.config.workspaceRoot,
-      sessionId: `syzygy-${agent.role}-${crypto.randomUUID()}`,
-      onProgress: (elapsed) => {
-        if (elapsed % 15 === 0) {
-          logger.info({ agentId, elapsed }, 'Waiting for Claude to initialize...');
-        }
-      },
-      onReady: () => {
-        logger.info({ agentId }, 'Claude ready in session');
-      },
-      onError: (error) => {
-        logger.error({ agentId, error }, 'Failed to initialize Claude in session');
-      },
-    });
-
-    // Now send the actual instruction (the task-specific context)
+    // Generate the instruction to send
     const instruction = generateInstructions(agent.role, context);
-    await this.agentRunner.sendInstruction(agent.sessionName, instruction);
+
+    // Check if architect inside tmux needs pane-based approach
+    if (agent.role === 'architect' && isInsideTmux() && !this.architectPaneId) {
+      // Architect inside tmux without a pane yet - create one
+      logger.info({ agentId }, 'Creating architect pane and launching Claude');
+
+      const result = await launchClaudeCLIInPane({
+        systemPrompt,
+        workingDirectory: this.config.workspaceRoot,
+        sessionId: `syzygy-${agent.role}-${crypto.randomUUID()}`,
+        direction: 'horizontal',
+        percentage: 50,
+      }, {
+        onProgress: (elapsed) => {
+          if (elapsed % 15 === 0) {
+            logger.info({ agentId, elapsed }, 'Waiting for Claude to initialize in architect pane...');
+          }
+        },
+        onReady: () => {
+          logger.info({ agentId }, 'Claude ready in architect pane');
+        },
+        onError: (error) => {
+          logger.error({ agentId, error }, 'Failed to initialize Claude in architect pane');
+        },
+      });
+
+      this.architectPaneId = result.paneId;
+      agent.paneId = result.paneId;
+      this.architectInitResult = { waitForReady: result.waitForReady, abort: result.abort };
+
+      // Wait for Claude to be ready before sending instruction
+      await result.waitForReady();
+
+      // Send instruction to the pane
+      await sendKeysRawToPane(this.architectPaneId, instruction);
+      await sendSpecialKeyToPane(this.architectPaneId, 'Enter');
+    } else if (agent.paneId) {
+      // Agent already has a pane - send instruction there
+      logger.info({ agentId, paneId: agent.paneId }, 'Sending instruction to existing agent pane');
+      await sendKeysRawToPane(agent.paneId, instruction);
+      await sendSpecialKeyToPane(agent.paneId, 'Enter');
+    } else {
+      // Fallback: session-based approach (original behavior)
+      // Ensure Claude is running in the session before sending instructions
+      // This handles the lazy initialization of non-PM agents
+      logger.info({ agentId, role: agent.role }, 'Ensuring Claude is running before sending instruction');
+      await ensureClaudeRunning(agent.sessionName, {
+        systemPrompt,
+        workingDirectory: this.config.workspaceRoot,
+        sessionId: `syzygy-${agent.role}-${crypto.randomUUID()}`,
+        onProgress: (elapsed) => {
+          if (elapsed % 15 === 0) {
+            logger.info({ agentId, elapsed }, 'Waiting for Claude to initialize...');
+          }
+        },
+        onReady: () => {
+          logger.info({ agentId }, 'Claude ready in session');
+        },
+        onError: (error) => {
+          logger.error({ agentId, error }, 'Failed to initialize Claude in session');
+        },
+      });
+
+      // Now send the actual instruction (the task-specific context)
+      await this.agentRunner.sendInstruction(agent.sessionName, instruction);
+    }
 
     // Update agent status
     agent.status = 'working';
@@ -989,6 +1045,23 @@ export class Orchestrator {
           logger.warn({ error, paneId: this.pmPaneId }, 'Failed to close PM pane');
         }
         this.pmPaneId = null;
+      }
+
+      // Abort architect initialization if still running
+      if (this.architectInitResult) {
+        this.architectInitResult.abort();
+        this.architectInitResult = undefined;
+      }
+
+      // Close architect pane if it was opened
+      if (this.architectPaneId) {
+        try {
+          await closePane(this.architectPaneId);
+          logger.debug({ paneId: this.architectPaneId }, 'Architect pane closed');
+        } catch (error) {
+          logger.warn({ error, paneId: this.architectPaneId }, 'Failed to close architect pane');
+        }
+        this.architectPaneId = null;
       }
 
       // Stop split screen
