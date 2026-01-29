@@ -101,19 +101,37 @@ mock.module('../../src/stages/stage-manager.js', () => ({
   StageManager: mock(() => mockStageManager),
 }));
 
+// Mock AgentManager
+const mockAgentManager = {
+  startAgent: mock(async () => ({
+    id: 'product-manager',
+    windowName: 'syzygy-test-product-manager',
+    role: 'product-manager',
+    startedAt: new Date(),
+    waitForReady: mock(async () => {}),
+  })),
+  stopAgent: mock(async () => {}),
+  stopAll: mock(async () => {}),
+  sendMessage: mock(async () => {}),
+  getStatus: mock(() => undefined),
+  getAgent: mock(() => undefined),
+  focusAgent: mock(async () => {}),
+  listAgents: mock(() => []),
+  markCompleted: mock(() => {}),
+  setCurrentTask: mock(() => {}),
+  checkForStuckAgents: mock(() => []),
+};
+
+mock.module('../../src/core/agent-manager.js', () => ({
+  AgentManager: mock(() => mockAgentManager),
+  AgentStartError: class AgentStartError extends Error {},
+}));
+
 // Mock tmux-utils functions that orchestrator uses directly
 const mockKillSessions = mock(async () => {});
-const mockIsInsideTmux = mock(() => false); // Default to not inside tmux for tests
-const mockLaunchClaudeCLIInPane = mock(async () => ({
-  paneId: 'mock-pane',
-  waitForReady: Promise.resolve(),
-  abort: () => {},
-}));
 
 mock.module('../../src/utils/tmux-utils.js', () => ({
   killSessions: mockKillSessions,
-  isInsideTmux: mockIsInsideTmux,
-  launchClaudeCLIInPane: mockLaunchClaudeCLIInPane,
   TmuxError: class TmuxError extends Error {},
 }));
 
@@ -135,8 +153,13 @@ describe('Orchestrator', () => {
     mockAgentRunner.sendInstruction.mockClear();
     mockStageManager.initializeStages.mockClear();
     mockKillSessions.mockClear();
-    mockIsInsideTmux.mockClear();
-    mockLaunchClaudeCLIInPane.mockClear();
+    // Reset AgentManager mocks
+    mockAgentManager.startAgent.mockClear();
+    mockAgentManager.stopAgent.mockClear();
+    mockAgentManager.stopAll.mockClear();
+    mockAgentManager.sendMessage.mockClear();
+    mockAgentManager.getStatus.mockClear();
+    mockAgentManager.focusAgent.mockClear();
   });
 
   afterEach(async () => {
@@ -181,10 +204,8 @@ describe('Orchestrator', () => {
       // Should initialize stages
       expect(mockStageManager.initializeStages).toHaveBeenCalled();
 
-      // Should create core agents (PM uses async, Architect uses sync)
-      // PM uses createAgentSessionAsync, Architect uses createAgentSession
-      expect(mockSessionManager.createAgentSessionAsync).toHaveBeenCalledTimes(1);
-      expect(mockSessionManager.createAgentSession).toHaveBeenCalledTimes(1);
+      // Should create PM agent via AgentManager (Architect is lazy-started)
+      expect(mockAgentManager.startAgent).toHaveBeenCalledTimes(1);
 
       // Should start file monitoring
       expect(mockFileMonitor.start).toHaveBeenCalled();
@@ -198,19 +219,19 @@ describe('Orchestrator', () => {
       expect(mockWorkflowEngine.transitionTo).toHaveBeenCalledWith('spec_pending');
     });
 
-    it('should provide PM with instructions via system prompt', async () => {
+    it('should provide PM with instructions via AgentManager', async () => {
       orchestrator = new Orchestrator();
 
       await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
-      // PM gets instructions via system prompt in createAgentSessionAsync, not sendInstruction
-      expect(mockSessionManager.createAgentSessionAsync).toHaveBeenCalled();
-      const calls = mockSessionManager.createAgentSessionAsync.mock.calls as unknown as [Agent, { systemPrompt?: string }][];
+      // PM gets instructions via AgentManager.startAgent with initialPrompt
+      expect(mockAgentManager.startAgent).toHaveBeenCalled();
+      const calls = mockAgentManager.startAgent.mock.calls as unknown as [{ initialPrompt?: string }][];
       expect(calls.length).toBeGreaterThan(0);
       const firstCall = calls[0];
-      const options = firstCall?.[1];
-      // System prompt should contain feature context
-      expect(options?.systemPrompt).toBeDefined();
+      const config = firstCall?.[0];
+      // Initial prompt should contain instructions
+      expect(config?.initialPrompt).toBeDefined();
     });
 
     it('should setup file monitoring for all stages', async () => {
@@ -240,8 +261,8 @@ describe('Orchestrator', () => {
 
       await expect(orchestrator.startWorkflow('test-feature', 'Test description')).rejects.toThrow('Init failed');
 
-      // Should cleanup sessions
-      expect(mockSessionManager.cleanupAllSessions).toHaveBeenCalled();
+      // Should cleanup agents via AgentManager
+      expect(mockAgentManager.stopAll).toHaveBeenCalled();
     });
   });
 
@@ -255,13 +276,13 @@ describe('Orchestrator', () => {
       expect(mockFileMonitor.stop).toHaveBeenCalled();
     });
 
-    it('should cleanup all sessions', async () => {
+    it('should cleanup all agents via AgentManager', async () => {
       orchestrator = new Orchestrator();
       await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
       await orchestrator.stopWorkflow();
 
-      expect(mockSessionManager.cleanupAllSessions).toHaveBeenCalled();
+      expect(mockAgentManager.stopAll).toHaveBeenCalled();
     });
 
     it('should clear agents list', async () => {
@@ -389,11 +410,12 @@ describe('Orchestrator', () => {
   });
 
   describe('error handling', () => {
-    it('should handle session creation failure', async () => {
+    it('should handle agent creation failure', async () => {
       orchestrator = new Orchestrator();
 
-      mockSessionManager.createAgentSession.mockRejectedValueOnce(
-        new Error('Session creation failed')
+      // Mock AgentManager.startAgent failure
+      mockAgentManager.startAgent.mockRejectedValueOnce(
+        new Error('Agent creation failed')
       );
 
       await expect(orchestrator.startWorkflow('test-feature', 'Test description')).rejects.toThrow();
@@ -408,8 +430,8 @@ describe('Orchestrator', () => {
 
       await expect(orchestrator.startWorkflow('test-feature', 'Test description')).rejects.toThrow();
 
-      // Should attempt cleanup
-      expect(mockSessionManager.cleanupAllSessions).toHaveBeenCalled();
+      // Should attempt cleanup via AgentManager
+      expect(mockAgentManager.stopAll).toHaveBeenCalled();
     });
   });
 

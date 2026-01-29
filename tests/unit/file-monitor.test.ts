@@ -6,7 +6,7 @@
  * When run with the full test suite, the module may already be cached.
  */
 
-import { describe, it, expect, beforeEach, afterEach, mock, beforeAll } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { FileMonitorError } from '../../src/types/message.types';
 import type { WorkflowEvent } from '../../src/types/workflow.types';
 
