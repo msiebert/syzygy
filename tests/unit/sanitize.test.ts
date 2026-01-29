@@ -529,7 +529,7 @@ describe('escapeShellArg', () => {
     it('should handle complex shell command', () => {
       const arg = "test; rm -rf /; echo 'injection'";
       const escaped = escapeShellArg(arg);
-      expect(escaped).toBe("'test; rm -rf /; echo '\\'''injection'\\'''");
+      expect(escaped).toBe("'test; rm -rf /; echo '\\''injection'\\'''");
     });
   });
 

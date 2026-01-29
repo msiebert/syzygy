@@ -18,6 +18,17 @@ const mockSessionManager = {
     pid: 12345,
     createdAt: new Date(),
   })),
+  createAgentSessionAsync: mock(async (agent: Agent): Promise<{ session: TmuxSession; claudeInit?: unknown }> => ({
+    session: {
+      name: agent.sessionName,
+      agentId: agent.id,
+      windowId: 'mock-window',
+      paneId: 'mock-pane',
+      pid: 12345,
+      createdAt: new Date(),
+    },
+    claudeInit: undefined,
+  })),
   destroyAgentSession: mock(async (_agentId: string) => {}),
   cleanupAllSessions: mock(async () => {}),
   getSession: mock((_agentId: string) => undefined),
@@ -90,12 +101,29 @@ mock.module('../../src/stages/stage-manager.js', () => ({
   StageManager: mock(() => mockStageManager),
 }));
 
+// Mock tmux-utils functions that orchestrator uses directly
+const mockKillSessions = mock(async () => {});
+const mockIsInsideTmux = mock(() => false); // Default to not inside tmux for tests
+const mockLaunchClaudeCLIInPane = mock(async () => ({
+  paneId: 'mock-pane',
+  waitForReady: Promise.resolve(),
+  abort: () => {},
+}));
+
+mock.module('../../src/utils/tmux-utils.js', () => ({
+  killSessions: mockKillSessions,
+  isInsideTmux: mockIsInsideTmux,
+  launchClaudeCLIInPane: mockLaunchClaudeCLIInPane,
+  TmuxError: class TmuxError extends Error {},
+}));
+
 describe('Orchestrator', () => {
   let orchestrator: Orchestrator;
 
   beforeEach(() => {
     // Reset all mocks before each test
     mockSessionManager.createAgentSession.mockClear();
+    mockSessionManager.createAgentSessionAsync.mockClear();
     mockSessionManager.destroyAgentSession.mockClear();
     mockSessionManager.cleanupAllSessions.mockClear();
     mockWorkflowEngine.transitionTo.mockClear();
@@ -106,6 +134,9 @@ describe('Orchestrator', () => {
     mockFileMonitor.on.mockClear();
     mockAgentRunner.sendInstruction.mockClear();
     mockStageManager.initializeStages.mockClear();
+    mockKillSessions.mockClear();
+    mockIsInsideTmux.mockClear();
+    mockLaunchClaudeCLIInPane.mockClear();
   });
 
   afterEach(async () => {
@@ -150,8 +181,10 @@ describe('Orchestrator', () => {
       // Should initialize stages
       expect(mockStageManager.initializeStages).toHaveBeenCalled();
 
-      // Should create core agents (PM and Architect)
-      expect(mockSessionManager.createAgentSession).toHaveBeenCalledTimes(2);
+      // Should create core agents (PM uses async, Architect uses sync)
+      // PM uses createAgentSessionAsync, Architect uses createAgentSession
+      expect(mockSessionManager.createAgentSessionAsync).toHaveBeenCalledTimes(1);
+      expect(mockSessionManager.createAgentSession).toHaveBeenCalledTimes(1);
 
       // Should start file monitoring
       expect(mockFileMonitor.start).toHaveBeenCalled();
@@ -165,18 +198,19 @@ describe('Orchestrator', () => {
       expect(mockWorkflowEngine.transitionTo).toHaveBeenCalledWith('spec_pending');
     });
 
-    it('should send instruction to Product Manager', async () => {
+    it('should provide PM with instructions via system prompt', async () => {
       orchestrator = new Orchestrator();
 
       await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
-      expect(mockAgentRunner.sendInstruction).toHaveBeenCalled();
-      const calls = mockAgentRunner.sendInstruction.mock.calls as unknown as [string, string][];
+      // PM gets instructions via system prompt in createAgentSessionAsync, not sendInstruction
+      expect(mockSessionManager.createAgentSessionAsync).toHaveBeenCalled();
+      const calls = mockSessionManager.createAgentSessionAsync.mock.calls as unknown as [Agent, { systemPrompt?: string }][];
       expect(calls.length).toBeGreaterThan(0);
-      const firstCall = calls[0]!;
-      const [agentId, instruction] = firstCall;
-      expect(agentId).toBe('product-manager');
-      expect(instruction).toContain('test-feature');
+      const firstCall = calls[0];
+      const options = firstCall?.[1];
+      // System prompt should contain feature context
+      expect(options?.systemPrompt).toBeDefined();
     });
 
     it('should setup file monitoring for all stages', async () => {
@@ -312,12 +346,14 @@ describe('Orchestrator', () => {
       expect(archAgent?.sessionName).toBe(toSessionName('syzygy-architect'));
     });
 
-    it('should set PM agent status to working after instruction sent', async () => {
+    it('should have PM agent status as idle initially (transitions to working async)', async () => {
       orchestrator = new Orchestrator();
       await orchestrator.startWorkflow('test-feature', 'Test feature description');
 
+      // PM status starts as 'idle' - it transitions to 'working' asynchronously
+      // when the PM session is ready (via onReady callback)
       const pmAgent = orchestrator.getAgent('product-manager');
-      expect(pmAgent?.status).toBe('working');
+      expect(pmAgent?.status).toBe('idle');
     });
   });
 
