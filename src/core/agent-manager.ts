@@ -38,6 +38,25 @@ const COMPLETION_MARKER = '[SYZYGY:COMPLETE]';
 const ERROR_MARKER = '[SYZYGY:ERROR]';
 
 /**
+ * Escape a string for use in a RegExp.
+ */
+function escapeRegExp(str: string): string {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Regex pattern to detect completion marker at the start of a line.
+ * Only matches when the marker appears at line start (with optional leading whitespace),
+ * not when it's embedded in other text (like instruction echoes).
+ */
+const COMPLETION_PATTERN = new RegExp(`^\\s*${escapeRegExp(COMPLETION_MARKER)}`, 'm');
+
+/**
+ * Regex pattern to detect error marker at the start of a line.
+ */
+const ERROR_PATTERN = new RegExp(`^\\s*${escapeRegExp(ERROR_MARKER)}`, 'm');
+
+/**
  * Status of an agent in its lifecycle
  */
 export type AgentStatus =
@@ -650,6 +669,10 @@ export class AgentManager {
   /**
    * Start monitoring an agent for completion or errors
    * Returns a handle to stop monitoring and a promise that resolves when monitoring ends
+   *
+   * Uses baseline-based detection: captures the pane content length when monitoring starts,
+   * and only detects markers in NEW content after that baseline. This prevents false detection
+   * of markers that appear in the echoed prompt/instructions.
    */
   startMonitoring(agentId: AgentId, options: MonitorOptions = {}): MonitorHandle {
     const agent = this.agents.get(agentId);
@@ -665,6 +688,11 @@ export class AgentManager {
     let stopped = false;
     let intervalId: Timer | undefined;
     const startTime = Date.now();
+
+    // Baseline content length when monitoring starts.
+    // Markers in content before this point are ignored (they're from the echoed prompt).
+    let baselineLength = 0;
+    let baselineCaptured = false;
 
     // Create a promise that resolves when monitoring ends
     let resolvePromise: () => void;
@@ -690,8 +718,20 @@ export class AgentManager {
       try {
         const content = await capturePaneById(agent.paneId);
 
-        // Check for completion
-        if (this.detectCompletion(content)) {
+        // On first poll, capture baseline length (prompt echo is already in pane)
+        if (!baselineCaptured) {
+          baselineLength = content.length;
+          baselineCaptured = true;
+          logger.debug({ agentId, baselineLength }, 'Captured monitoring baseline');
+          // Skip detection on first poll - baseline just established
+          return;
+        }
+
+        // Only check content AFTER the baseline for markers
+        const newContent = content.slice(baselineLength);
+
+        // Check for completion in new content only
+        if (this.detectCompletion(newContent)) {
           logger.info({ agentId }, 'Agent completed successfully');
           this.markCompleted(agentId);
           if (options.onComplete) {
@@ -705,8 +745,8 @@ export class AgentManager {
           return;
         }
 
-        // Check for errors
-        if (this.detectError(content)) {
+        // Check for errors in new content only
+        if (this.detectError(newContent)) {
           logger.warn({ agentId }, 'Agent encountered error');
           agent.status = 'error';
           agent.lastActivity = new Date();
@@ -785,17 +825,24 @@ export class AgentManager {
   }
 
   /**
-   * Detect completion marker in output
+   * Detect completion marker in output.
+   *
+   * Only detect the marker when it appears at the START of a line,
+   * not when it's embedded in other text (like instruction echoes).
+   * This prevents false detection of markers in echoed prompts like:
+   * "Output the exact text: [SYZYGY:COMPLETE]"
    */
   private detectCompletion(output: string): boolean {
-    return output.includes(COMPLETION_MARKER);
+    return COMPLETION_PATTERN.test(output);
   }
 
   /**
-   * Detect explicit error marker in output
+   * Detect error marker in output.
+   *
+   * Only detect the marker when it appears at the START of a line.
    */
   private detectError(output: string): boolean {
-    return output.includes(ERROR_MARKER);
+    return ERROR_PATTERN.test(output);
   }
 
   /**

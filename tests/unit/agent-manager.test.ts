@@ -432,7 +432,9 @@ describe('AgentManager', () => {
         keepCompletedPanes: true,
       });
 
-      // Setup mock to return completion marker
+      // Setup mock to return completion marker in NEW content after baseline
+      // The baseline-based detection requires the marker to appear in content
+      // that grows AFTER the first monitoring poll captures the baseline.
       let callCount = 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (Bun as any).spawn = (cmd: string[]) => {
@@ -445,12 +447,12 @@ describe('AgentManager', () => {
           result = `%${paneIdCounter}`;
         } else if (args[0] === 'capture-pane') {
           callCount++;
-          if (callCount >= 2) {
+          if (callCount >= 2 && callCount < 5) {
+            // Ready state - this content becomes the baseline
             result = 'Claude Code\n>';
-          }
-          if (callCount >= 4) {
-            // Return explicit completion marker on later calls
-            result = 'Work done!\n\n[SYZYGY:COMPLETE]';
+          } else if (callCount >= 5) {
+            // Content grows: baseline + new content with completion marker
+            result = 'Claude Code\n>Work done!\n\n[SYZYGY:COMPLETE]';
           }
         }
 
@@ -477,8 +479,8 @@ describe('AgentManager', () => {
         },
       });
 
-      // Wait for completion detection
-      await new Promise(r => setTimeout(r, 200));
+      // Wait for completion detection (needs time for baseline + detection polls)
+      await new Promise(r => setTimeout(r, 300));
 
       expect(onCompleteCalled).toBe(true);
       expect(managerWithKeepPanes.getStatus(handle.id)).toBe('completed');
@@ -495,7 +497,9 @@ describe('AgentManager', () => {
         keepCompletedPanes: true,
       });
 
-      // Setup mock to return error marker
+      // Setup mock to return error marker in NEW content after baseline
+      // The baseline-based detection requires the marker to appear in content
+      // that grows AFTER the first monitoring poll captures the baseline.
       let callCount = 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (Bun as any).spawn = (cmd: string[]) => {
@@ -508,12 +512,12 @@ describe('AgentManager', () => {
           result = `%${paneIdCounter}`;
         } else if (args[0] === 'capture-pane') {
           callCount++;
-          if (callCount >= 2) {
+          if (callCount >= 2 && callCount < 5) {
+            // Ready state - this content becomes the baseline
             result = 'Claude Code\n>';
-          }
-          if (callCount >= 4) {
-            // Return explicit error marker on later calls
-            result = 'Something went wrong\n\n[SYZYGY:ERROR]';
+          } else if (callCount >= 5) {
+            // Content grows: baseline + new content with error marker
+            result = 'Claude Code\n>Something went wrong\n\n[SYZYGY:ERROR]';
           }
         }
 
@@ -540,8 +544,8 @@ describe('AgentManager', () => {
         },
       });
 
-      // Wait for error detection
-      await new Promise(r => setTimeout(r, 200));
+      // Wait for error detection (needs time for baseline + detection polls)
+      await new Promise(r => setTimeout(r, 300));
 
       expect(onErrorCalled).toBe(true);
       expect(managerWithKeepPanes.getStatus(handle.id)).toBe('error');
