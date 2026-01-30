@@ -623,9 +623,10 @@ export class Orchestrator {
       // Send instruction to agent
       await this.sendInstructionToAgent(agent.id, context);
 
-      // Transition workflow state
+      // Transition workflow state (but not if we're already in error state)
+      const currentState = this.workflowEngine.getCurrentState();
       const nextState = this.getNextWorkflowState(stageName);
-      if (nextState) {
+      if (currentState !== 'error' && nextState) {
         this.workflowEngine.transitionTo(nextState);
       }
 

@@ -512,8 +512,8 @@ describe('AgentManager', () => {
             result = 'Claude Code\n>';
           }
           if (callCount >= 4) {
-            // Return error marker on later calls
-            result = 'Error: Something went wrong';
+            // Return explicit error marker on later calls
+            result = 'Something went wrong\n\n[SYZYGY:ERROR]';
           }
         }
 

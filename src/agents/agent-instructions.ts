@@ -142,6 +142,13 @@ When you have fully completed your assigned task (spec is written and user has a
 1. Output the exact text: [SYZYGY:COMPLETE]
 2. This signals to Syzygy that your work is finished
 3. Do NOT output this until you are truly done
+
+## Signaling Errors
+
+If you encounter an unrecoverable error that prevents you from completing your task:
+1. Output the exact text: [SYZYGY:ERROR]
+2. Describe the error and what went wrong
+3. The pane will stay open for debugging
 `;
 }
 
@@ -277,6 +284,13 @@ When you have fully completed your assigned task (architecture doc and all task 
 1. Output the exact text: [SYZYGY:COMPLETE]
 2. This signals to Syzygy that your work is finished
 3. Do NOT output this until you are truly done
+
+## Signaling Errors
+
+If you encounter an unrecoverable error that prevents you from completing your task:
+1. Output the exact text: [SYZYGY:ERROR]
+2. Describe the error and what went wrong
+3. The pane will stay open for debugging
 `;
 }
 
@@ -382,6 +396,13 @@ When you have fully completed your assigned task (test file created):
 1. Output the exact text: [SYZYGY:COMPLETE]
 2. This signals to Syzygy that your work is finished
 3. Do NOT output this until you are truly done
+
+## Signaling Errors
+
+If you encounter an unrecoverable error that prevents you from completing your task:
+1. Output the exact text: [SYZYGY:ERROR]
+2. Describe the error and what went wrong
+3. The pane will stay open for debugging
 `;
 }
 
@@ -493,6 +514,13 @@ When you have fully completed your assigned task (all tests pass and implementat
 1. Output the exact text: [SYZYGY:COMPLETE]
 2. This signals to Syzygy that your work is finished
 3. Do NOT output this until you are truly done
+
+## Signaling Errors
+
+If you encounter an unrecoverable error that prevents you from completing your task:
+1. Output the exact text: [SYZYGY:ERROR]
+2. Describe the error and what went wrong
+3. The pane will stay open for debugging
 `;
 }
 
@@ -622,6 +650,13 @@ When you have fully completed your assigned task (review complete - either appro
 1. Output the exact text: [SYZYGY:COMPLETE]
 2. This signals to Syzygy that your work is finished
 3. Do NOT output this until you are truly done
+
+## Signaling Errors
+
+If you encounter an unrecoverable error that prevents you from completing your task:
+1. Output the exact text: [SYZYGY:ERROR]
+2. Describe the error and what went wrong
+3. The pane will stay open for debugging
 `;
 }
 
@@ -717,6 +752,13 @@ When you have fully completed your assigned task (all documentation updated):
 1. Output the exact text: [SYZYGY:COMPLETE]
 2. This signals to Syzygy that your work is finished
 3. Do NOT output this until you are truly done
+
+## Signaling Errors
+
+If you encounter an unrecoverable error that prevents you from completing your task:
+1. Output the exact text: [SYZYGY:ERROR]
+2. Describe the error and what went wrong
+3. The pane will stay open for debugging
 `;
 }
 

@@ -32,14 +32,10 @@ const logger = createModuleLogger('agent-manager');
 const COMPLETION_MARKER = '[SYZYGY:COMPLETE]';
 
 /**
- * Patterns to detect errors in agent output
+ * Explicit error marker that agents output when they encounter an unrecoverable error.
+ * This is a unique string that won't appear in normal conversation.
  */
-const ERROR_MARKERS = [
-  /error:/i,
-  /failed:/i,
-  /exception:/i,
-  /\[✗\]\s+failed/i,
-];
+const ERROR_MARKER = '[SYZYGY:ERROR]';
 
 /**
  * Status of an agent in its lifecycle
@@ -796,10 +792,10 @@ export class AgentManager {
   }
 
   /**
-   * Detect error markers in output
+   * Detect explicit error marker in output
    */
   private detectError(output: string): boolean {
-    return ERROR_MARKERS.some(pattern => pattern.test(output));
+    return output.includes(ERROR_MARKER);
   }
 
   /**
