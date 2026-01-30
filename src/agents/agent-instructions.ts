@@ -135,6 +135,13 @@ priority: normal
 - Acceptance criteria are testable
 
 Once the user approves your spec, the Architect will begin designing the implementation.
+
+## Signaling Completion
+
+When you have fully completed your assigned task (spec is written and user has approved):
+1. Output the exact text: [SYZYGY:COMPLETE]
+2. This signals to Syzygy that your work is finished
+3. Do NOT output this until you are truly done
 `;
 }
 
@@ -263,6 +270,13 @@ dependencies: []  # Other task IDs this depends on
 - Dependencies are documented
 
 The Test Engineer will use your architecture to create test cases.
+
+## Signaling Completion
+
+When you have fully completed your assigned task (architecture doc and all task files created):
+1. Output the exact text: [SYZYGY:COMPLETE]
+2. This signals to Syzygy that your work is finished
+3. Do NOT output this until you are truly done
 `;
 }
 
@@ -361,6 +375,13 @@ describe('${featureName}', () => {
 - Tests fail before implementation (expected)
 
 Developers will implement code to make these tests pass.
+
+## Signaling Completion
+
+When you have fully completed your assigned task (test file created):
+1. Output the exact text: [SYZYGY:COMPLETE]
+2. This signals to Syzygy that your work is finished
+3. Do NOT output this until you are truly done
 `;
 }
 
@@ -465,6 +486,13 @@ mv ${taskPath || `.syzygy/stages/tasks/pending/${featureSlug}-${taskId}.md`} .sy
 \`\`\`
 
 The Code Reviewer will review your implementation.
+
+## Signaling Completion
+
+When you have fully completed your assigned task (all tests pass and implementation summary written):
+1. Output the exact text: [SYZYGY:COMPLETE]
+2. This signals to Syzygy that your work is finished
+3. Do NOT output this until you are truly done
 `;
 }
 
@@ -587,6 +615,13 @@ priority: high
 - No major issues left unaddressed
 
 If approved, the Documenter will update project docs. If fixes requested, a Developer will address them.
+
+## Signaling Completion
+
+When you have fully completed your assigned task (review complete - either approved or fixes requested):
+1. Output the exact text: [SYZYGY:COMPLETE]
+2. This signals to Syzygy that your work is finished
+3. Do NOT output this until you are truly done
 `;
 }
 
@@ -675,6 +710,13 @@ featureName: ${featureName}
 - No outdated information left
 
 Once complete, the workflow is finished and Syzygy will notify the user!
+
+## Signaling Completion
+
+When you have fully completed your assigned task (all documentation updated):
+1. Output the exact text: [SYZYGY:COMPLETE]
+2. This signals to Syzygy that your work is finished
+3. Do NOT output this until you are truly done
 `;
 }
 

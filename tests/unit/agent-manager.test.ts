@@ -449,8 +449,8 @@ describe('AgentManager', () => {
             result = 'Claude Code\n>';
           }
           if (callCount >= 4) {
-            // Return completion marker on later calls
-            result = 'Task complete! All work finished.';
+            // Return explicit completion marker on later calls
+            result = 'Work done!\n\n[SYZYGY:COMPLETE]';
           }
         }
 

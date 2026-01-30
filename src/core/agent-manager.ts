@@ -26,14 +26,10 @@ export type { PaneId } from '@utils/tmux-utils';
 const logger = createModuleLogger('agent-manager');
 
 /**
- * Patterns to detect completion in agent output
+ * Explicit completion marker that agents output when done.
+ * This is a unique string that won't appear in normal conversation.
  */
-const COMPLETION_MARKERS = [
-  /task\s+(?:complete|completed|finish|finished|done)/i,
-  /successfully\s+(?:complete|completed|finish|finished)/i,
-  /\[✓\]\s+(?:complete|done)/i,
-  /work\s+finished/i,
-];
+const COMPLETION_MARKER = '[SYZYGY:COMPLETE]';
 
 /**
  * Patterns to detect errors in agent output
@@ -793,10 +789,10 @@ export class AgentManager {
   }
 
   /**
-   * Detect completion markers in output
+   * Detect completion marker in output
    */
   private detectCompletion(output: string): boolean {
-    return COMPLETION_MARKERS.some(pattern => pattern.test(output));
+    return output.includes(COMPLETION_MARKER);
   }
 
   /**
