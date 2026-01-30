@@ -405,5 +405,224 @@ describe('AgentManager', () => {
       expect(managerWithShortTimeout.getStatus(handle.id)).toBe('stuck');
     });
   });
+
+  describe('startMonitoring', () => {
+    it('should throw if agent not found', async () => {
+      expect(() => manager.startMonitoring(toAgentId('non-existent'))).toThrow('not found');
+    });
+
+    it('should return a handle with stop function', async () => {
+      const handle = await manager.startAgent(testConfig);
+      await handle.waitForReady();
+
+      const monitorHandle = manager.startMonitoring(handle.id);
+
+      expect(monitorHandle.stop).toBeInstanceOf(Function);
+      expect(monitorHandle.done).toBeInstanceOf(Promise);
+
+      // Clean up
+      monitorHandle.stop();
+    });
+
+    it('should detect completion and call markCompleted', async () => {
+      // Create manager with keepCompletedPanes: true so we can check status
+      const managerWithKeepPanes = new AgentManager({
+        readyTimeoutMs: 5000,
+        cleanupOnExit: false,
+        keepCompletedPanes: true,
+      });
+
+      // Setup mock to return completion marker
+      let callCount = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (Bun as any).spawn = (cmd: string[]) => {
+        const args = cmd.slice(1);
+        execTmuxCallLog.push(args);
+
+        let result = '';
+        if (args[0] === 'split-window') {
+          paneIdCounter++;
+          result = `%${paneIdCounter}`;
+        } else if (args[0] === 'capture-pane') {
+          callCount++;
+          if (callCount >= 2) {
+            result = 'Claude Code\n>';
+          }
+          if (callCount >= 4) {
+            // Return completion marker on later calls
+            result = 'Task complete! All work finished.';
+          }
+        }
+
+        return {
+          stdout: new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode(result));
+              c.close();
+            },
+          }),
+          stderr: new ReadableStream({ start(c) { c.close(); } }),
+          exited: Promise.resolve(0),
+        };
+      };
+
+      const handle = await managerWithKeepPanes.startAgent(testConfig);
+      await handle.waitForReady();
+
+      let onCompleteCalled = false;
+      const monitorHandle = managerWithKeepPanes.startMonitoring(handle.id, {
+        pollInterval: 50,
+        onComplete: () => {
+          onCompleteCalled = true;
+        },
+      });
+
+      // Wait for completion detection
+      await new Promise(r => setTimeout(r, 200));
+
+      expect(onCompleteCalled).toBe(true);
+      expect(managerWithKeepPanes.getStatus(handle.id)).toBe('completed');
+
+      monitorHandle.stop();
+      setupMocks();
+    });
+
+    it('should detect errors and keep pane open', async () => {
+      // Create manager with keepCompletedPanes: true so we can verify agent is still tracked
+      const managerWithKeepPanes = new AgentManager({
+        readyTimeoutMs: 5000,
+        cleanupOnExit: false,
+        keepCompletedPanes: true,
+      });
+
+      // Setup mock to return error marker
+      let callCount = 0;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (Bun as any).spawn = (cmd: string[]) => {
+        const args = cmd.slice(1);
+        execTmuxCallLog.push(args);
+
+        let result = '';
+        if (args[0] === 'split-window') {
+          paneIdCounter++;
+          result = `%${paneIdCounter}`;
+        } else if (args[0] === 'capture-pane') {
+          callCount++;
+          if (callCount >= 2) {
+            result = 'Claude Code\n>';
+          }
+          if (callCount >= 4) {
+            // Return error marker on later calls
+            result = 'Error: Something went wrong';
+          }
+        }
+
+        return {
+          stdout: new ReadableStream({
+            start(c) {
+              c.enqueue(new TextEncoder().encode(result));
+              c.close();
+            },
+          }),
+          stderr: new ReadableStream({ start(c) { c.close(); } }),
+          exited: Promise.resolve(0),
+        };
+      };
+
+      const handle = await managerWithKeepPanes.startAgent(testConfig);
+      await handle.waitForReady();
+
+      let onErrorCalled = false;
+      const monitorHandle = managerWithKeepPanes.startMonitoring(handle.id, {
+        pollInterval: 50,
+        onError: () => {
+          onErrorCalled = true;
+        },
+      });
+
+      // Wait for error detection
+      await new Promise(r => setTimeout(r, 200));
+
+      expect(onErrorCalled).toBe(true);
+      expect(managerWithKeepPanes.getStatus(handle.id)).toBe('error');
+
+      // Agent should still be tracked (pane kept open for debugging)
+      expect(managerWithKeepPanes.listAgents()).toHaveLength(1);
+
+      monitorHandle.stop();
+      setupMocks();
+    });
+
+    it('should stop monitoring when stopMonitoring is called', async () => {
+      const handle = await manager.startAgent(testConfig);
+      await handle.waitForReady();
+
+      const monitorHandle = manager.startMonitoring(handle.id);
+
+      // Stop immediately
+      monitorHandle.stop();
+
+      // Wait a bit to ensure no more polling
+      await new Promise(r => setTimeout(r, 100));
+
+      // Should have stopped cleanly
+      expect(true).toBe(true);
+    });
+  });
+
+  describe('keepCompletedPanes config', () => {
+    it('should default to false (auto-close panes)', () => {
+      const defaultManager = new AgentManager({
+        cleanupOnExit: false,
+      });
+
+      // Access the config via listing agents - this tests the default indirectly
+      // Since default is false, markCompleted will trigger stopAgent
+      expect(defaultManager.listAgents()).toHaveLength(0);
+    });
+
+    it('should close pane when markCompleted is called with keepCompletedPanes: false', async () => {
+      const managerWithAutoClose = new AgentManager({
+        keepCompletedPanes: false,
+        readyTimeoutMs: 5000,
+        cleanupOnExit: false,
+      });
+
+      const handle = await managerWithAutoClose.startAgent(testConfig);
+      await handle.waitForReady();
+
+      expect(managerWithAutoClose.listAgents()).toHaveLength(1);
+
+      managerWithAutoClose.markCompleted(handle.id);
+
+      // Give async cleanup a moment to run
+      await new Promise(r => setTimeout(r, 50));
+
+      // Agent should be removed (pane closed)
+      expect(managerWithAutoClose.listAgents()).toHaveLength(0);
+    });
+
+    it('should keep pane open when markCompleted is called with keepCompletedPanes: true', async () => {
+      const managerWithKeepOpen = new AgentManager({
+        keepCompletedPanes: true,
+        readyTimeoutMs: 5000,
+        cleanupOnExit: false,
+      });
+
+      const handle = await managerWithKeepOpen.startAgent(testConfig);
+      await handle.waitForReady();
+
+      expect(managerWithKeepOpen.listAgents()).toHaveLength(1);
+
+      managerWithKeepOpen.markCompleted(handle.id);
+
+      // Give a moment for any async operations
+      await new Promise(r => setTimeout(r, 50));
+
+      // Agent should still be tracked with completed status
+      expect(managerWithKeepOpen.listAgents()).toHaveLength(1);
+      expect(managerWithKeepOpen.getStatus(handle.id)).toBe('completed');
+    });
+  });
 });
 

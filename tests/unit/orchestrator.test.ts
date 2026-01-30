@@ -60,19 +60,6 @@ const mockFileMonitor = {
   on: mock(() => {}),
 };
 
-const mockAgentRunner = {
-  sendInstruction: mock(async () => {}),
-  captureOutput: mock(async () => ({
-    agentId: 'test-agent',
-    content: 'test output',
-    timestamp: new Date(),
-    isComplete: false,
-    hasError: false,
-  })),
-  waitForCompletion: mock(async () => true),
-  monitorAgent: mock(() => {}),
-};
-
 const mockStageManager = {
   initializeStages: mock(async () => {}),
   moveArtifact: mock(async () => {}),
@@ -91,10 +78,6 @@ mock.module('../../src/core/workflow-engine.js', () => ({
 
 mock.module('../../src/core/file-monitor.js', () => ({
   FileMonitor: mock(() => mockFileMonitor),
-}));
-
-mock.module('../../src/core/agent-runner.js', () => ({
-  AgentRunner: mock(() => mockAgentRunner),
 }));
 
 mock.module('../../src/stages/stage-manager.js', () => ({
@@ -120,6 +103,12 @@ const mockAgentManager = {
   markCompleted: mock(() => {}),
   setCurrentTask: mock(() => {}),
   checkForStuckAgents: mock(() => []),
+  startMonitoring: mock(() => ({
+    stop: mock(() => {}),
+    done: Promise.resolve(),
+  })),
+  stopMonitoring: mock(() => {}),
+  stopAllMonitors: mock(() => {}),
 };
 
 mock.module('../../src/core/agent-manager.js', () => ({
@@ -150,7 +139,6 @@ describe('Orchestrator', () => {
     mockFileMonitor.start.mockClear();
     mockFileMonitor.stop.mockClear();
     mockFileMonitor.on.mockClear();
-    mockAgentRunner.sendInstruction.mockClear();
     mockStageManager.initializeStages.mockClear();
     mockKillSessions.mockClear();
     // Reset AgentManager mocks
@@ -160,6 +148,10 @@ describe('Orchestrator', () => {
     mockAgentManager.sendMessage.mockClear();
     mockAgentManager.getStatus.mockClear();
     mockAgentManager.focusAgent.mockClear();
+    mockAgentManager.markCompleted.mockClear();
+    mockAgentManager.startMonitoring.mockClear();
+    mockAgentManager.stopMonitoring.mockClear();
+    mockAgentManager.stopAllMonitors.mockClear();
   });
 
   afterEach(async () => {

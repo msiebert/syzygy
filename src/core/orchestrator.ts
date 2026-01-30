@@ -9,13 +9,12 @@ import { toAgentId } from '../types/agent.types.js';
 import { SessionManager } from './session-manager.js';
 import { WorkflowEngine } from './workflow-engine.js';
 import { FileMonitor } from './file-monitor.js';
-import { AgentRunner } from './agent-runner.js';
 import { StageManager } from '../stages/stage-manager.js';
 import { LockManager } from '../stages/lock-manager.js';
 import { ResumeDetector } from './resume-detector.js';
 import { PMMonitor } from './pm-monitor.js';
 import { SplitScreenController } from '../cli/split-screen.js';
-import { AgentManager } from './agent-manager.js';
+import { AgentManager, type MonitorHandle } from './agent-manager.js';
 import {
   getAlwaysRunningAgents,
   getSessionName,
@@ -46,12 +45,12 @@ export class Orchestrator {
   private sessionManager: SessionManager;
   private workflowEngine: WorkflowEngine | undefined;
   private fileMonitor: FileMonitor;
-  private agentRunner: AgentRunner;
   private stageManager: StageManager;
   private lockManager: LockManager;
   private resumeDetector: ResumeDetector;
   private agentManager: AgentManager;
   private agents: Map<string, Agent> = new Map();
+  private activeMonitors: Map<string, MonitorHandle> = new Map();
   private isRunning = false;
   private pmMonitor?: PMMonitor;
   private splitScreen?: SplitScreenController;
@@ -67,7 +66,6 @@ export class Orchestrator {
     // Initialize core components
     this.sessionManager = new SessionManager();
     this.fileMonitor = new FileMonitor({ debounceMs: 100 });
-    this.agentRunner = new AgentRunner();
     this.stageManager = new StageManager();
     this.lockManager = new LockManager();
     this.resumeDetector = new ResumeDetector(this.stageManager, this.lockManager);
@@ -788,42 +786,54 @@ export class Orchestrator {
     }
     this.agents.set(agentId, agent);
 
+    // Start monitoring agent for completion/errors
+    this.monitorAgentWork(agentId);
+
     logger.info({ agentId, role: agent.role }, 'Instruction sent to agent');
   }
 
   /**
    * Monitor agent work progress
+   * Uses AgentManager to poll for completion/error markers and auto-close panes
    * @private
-   * @future Will be used to monitor agent completion with timeout
    */
-  // @ts-expect-error - Reserved for future implementation
-  private async monitorAgentWork(agentId: string): Promise<void> {
+  private monitorAgentWork(agentId: string): void {
     const agent = this.agents.get(agentId);
     if (!agent) {
       return;
     }
 
-    try {
-      // Wait for completion with timeout
-      const completed = await this.agentRunner.waitForCompletion(
-        agent.sessionName,
-        30 * 60 * 1000 // 30 minutes timeout
-      );
+    const typedAgentId = toAgentId(agentId);
 
-      if (completed) {
-        agent.status = 'complete';
-        logger.info({ agentId }, 'Agent completed work');
-      } else {
-        agent.status = 'error';
-        logger.warn({ agentId }, 'Agent timed out');
-      }
-
-      this.agents.set(agentId, agent);
-    } catch (error) {
-      logger.error({ agentId, error }, 'Error monitoring agent');
-      agent.status = 'error';
-      this.agents.set(agentId, agent);
+    // Stop any existing monitor for this agent
+    const existingMonitor = this.activeMonitors.get(agentId);
+    if (existingMonitor) {
+      existingMonitor.stop();
+      this.activeMonitors.delete(agentId);
     }
+
+    // Start monitoring via AgentManager
+    const handle = this.agentManager.startMonitoring(typedAgentId, {
+      pollInterval: this.config.pollInterval,
+      timeout: 30 * 60 * 1000, // 30 minutes timeout
+      onComplete: () => {
+        logger.info({ agentId }, 'Agent completed work (via monitor)');
+        agent.status = 'complete';
+        this.agents.set(agentId, agent);
+        this.activeMonitors.delete(agentId);
+      },
+      onError: (error) => {
+        logger.warn({ agentId, error: error.message }, 'Agent error detected (via monitor)');
+        agent.status = 'error';
+        this.agents.set(agentId, agent);
+        this.activeMonitors.delete(agentId);
+        this.handleAgentError(agentId, error);
+      },
+    });
+
+    // Track the monitor
+    this.activeMonitors.set(agentId, handle);
+    logger.info({ agentId }, 'Started monitoring agent work');
   }
 
   /**
@@ -864,6 +874,18 @@ export class Orchestrator {
 
     // Stop PM monitoring
     this.pmMonitor?.stopPolling();
+
+    // Mark PM as completed (this will close the pane since keepCompletedPanes is false)
+    const pmAgentId = toAgentId('product-manager');
+    this.agentManager.markCompleted(pmAgentId);
+    logger.info('PM pane closed after spec completion');
+
+    // Update local agent status
+    const pmAgent = this.agents.get('product-manager');
+    if (pmAgent) {
+      pmAgent.status = 'complete';
+      this.agents.set('product-manager', pmAgent);
+    }
 
     // Transition workflow to next stage
     this.workflowEngine?.transitionTo('arch_pending');
@@ -906,6 +928,13 @@ export class Orchestrator {
 
       // Stop PM monitoring
       this.pmMonitor?.stopPolling();
+
+      // Stop all active agent monitors
+      for (const [agentId, monitor] of this.activeMonitors) {
+        logger.debug({ agentId }, 'Stopping agent monitor');
+        monitor.stop();
+      }
+      this.activeMonitors.clear();
 
       // Stop all agents via AgentManager (handles window cleanup)
       await this.agentManager.stopAll();

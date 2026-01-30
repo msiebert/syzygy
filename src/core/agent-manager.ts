@@ -26,6 +26,26 @@ export type { PaneId } from '@utils/tmux-utils';
 const logger = createModuleLogger('agent-manager');
 
 /**
+ * Patterns to detect completion in agent output
+ */
+const COMPLETION_MARKERS = [
+  /task\s+(?:complete|completed|finish|finished|done)/i,
+  /successfully\s+(?:complete|completed|finish|finished)/i,
+  /\[✓\]\s+(?:complete|done)/i,
+  /work\s+finished/i,
+];
+
+/**
+ * Patterns to detect errors in agent output
+ */
+const ERROR_MARKERS = [
+  /error:/i,
+  /failed:/i,
+  /exception:/i,
+  /\[✗\]\s+failed/i,
+];
+
+/**
  * Status of an agent in its lifecycle
  */
 export type AgentStatus =
@@ -84,6 +104,30 @@ export interface AgentInfo {
 }
 
 /**
+ * Options for monitoring an agent
+ */
+export interface MonitorOptions {
+  /** Polling interval in ms (default: 1000) */
+  pollInterval?: number;
+  /** Timeout in ms (default: 30 minutes) */
+  timeout?: number;
+  /** Callback when agent completes successfully */
+  onComplete?: () => void;
+  /** Callback when agent encounters an error */
+  onError?: (error: Error) => void;
+}
+
+/**
+ * Handle returned when monitoring is started
+ */
+export interface MonitorHandle {
+  /** Stop monitoring */
+  stop: () => void;
+  /** Promise that resolves when monitoring ends (completion, error, or stopped) */
+  done: Promise<void>;
+}
+
+/**
  * Retry configuration for agent startup
  */
 export interface RetryConfig {
@@ -120,7 +164,7 @@ const defaultConfig: AgentLifecycleConfig = {
   retryAttempts: 3,
   retryDelayMs: 1000,
   stuckTimeoutMs: 600000,
-  keepCompletedPanes: true,
+  keepCompletedPanes: false, // Auto-close panes on completion
   cleanupOnExit: true,
 };
 
@@ -214,6 +258,7 @@ function isClaudeReady(output: string): boolean {
  */
 export class AgentManager {
   private agents: Map<AgentId, ManagedAgent> = new Map();
+  private monitors: Map<AgentId, { stop: () => void }> = new Map();
   private config: AgentLifecycleConfig;
   private cleanupRegistered = false;
 
@@ -317,7 +362,7 @@ export class AgentManager {
 
       // Start Claude Code with initial prompt from file (avoids tmux corruption)
       // Use $(cat file) to read prompt - bypasses tmux for long string content
-      let claudeCommand = `claude --session-id ${escapeShellArg(sessionId)}`;
+      let claudeCommand = `claude --dangerously-skip-permissions --session-id ${escapeShellArg(sessionId)}`;
       if (tempPromptPath) {
         claudeCommand += ` "$(cat ${escapeShellArg(tempPromptPath)})"`;
       }
@@ -501,6 +546,9 @@ export class AgentManager {
 
     logger.info({ agentId }, 'Stopping agent');
 
+    // Stop monitoring if active
+    this.stopMonitoring(agentId);
+
     // Abort any pending operations
     agent.abortController?.abort();
 
@@ -517,6 +565,9 @@ export class AgentManager {
    */
   async stopAll(): Promise<void> {
     logger.info({ count: this.agents.size }, 'Stopping all agents');
+
+    // Stop all monitors first
+    this.stopAllMonitors();
 
     const agentIds = Array.from(this.agents.keys());
     await Promise.all(agentIds.map(id => this.stopAgent(id)));
@@ -602,6 +653,157 @@ export class AgentManager {
     }
 
     return stuck;
+  }
+
+  /**
+   * Start monitoring an agent for completion or errors
+   * Returns a handle to stop monitoring and a promise that resolves when monitoring ends
+   */
+  startMonitoring(agentId: AgentId, options: MonitorOptions = {}): MonitorHandle {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      throw new Error(`Agent ${agentId} not found`);
+    }
+
+    const pollInterval = options.pollInterval ?? 1000;
+    const timeout = options.timeout ?? 30 * 60 * 1000; // 30 minutes default
+
+    logger.info({ agentId, pollInterval, timeout }, 'Starting agent monitoring');
+
+    let stopped = false;
+    let intervalId: Timer | undefined;
+    const startTime = Date.now();
+
+    // Create a promise that resolves when monitoring ends
+    let resolvePromise: () => void;
+    const donePromise = new Promise<void>((resolve) => {
+      resolvePromise = resolve;
+    });
+
+    const stopMonitoring = () => {
+      if (stopped) return;
+      stopped = true;
+      if (intervalId) {
+        clearInterval(intervalId);
+        intervalId = undefined;
+      }
+      this.monitors.delete(agentId);
+      logger.info({ agentId }, 'Stopped agent monitoring');
+      resolvePromise();
+    };
+
+    const poll = async () => {
+      if (stopped) return;
+
+      try {
+        const content = await capturePaneById(agent.paneId);
+
+        // Check for completion
+        if (this.detectCompletion(content)) {
+          logger.info({ agentId }, 'Agent completed successfully');
+          this.markCompleted(agentId);
+          if (options.onComplete) {
+            try {
+              options.onComplete();
+            } catch (err) {
+              logger.error({ agentId, error: err }, 'Error in onComplete callback');
+            }
+          }
+          stopMonitoring();
+          return;
+        }
+
+        // Check for errors
+        if (this.detectError(content)) {
+          logger.warn({ agentId }, 'Agent encountered error');
+          agent.status = 'error';
+          agent.lastActivity = new Date();
+          // Keep pane open for debugging
+          if (options.onError) {
+            try {
+              options.onError(new Error('Agent error detected in output'));
+            } catch (err) {
+              logger.error({ agentId, error: err }, 'Error in onError callback');
+            }
+          }
+          stopMonitoring();
+          return;
+        }
+
+        // Check for timeout
+        if (Date.now() - startTime >= timeout) {
+          logger.warn({ agentId, timeout }, 'Agent monitoring timeout');
+          agent.status = 'stuck';
+          agent.lastActivity = new Date();
+          // Keep pane open for debugging
+          if (options.onError) {
+            try {
+              options.onError(new Error('Monitoring timeout'));
+            } catch (err) {
+              logger.error({ agentId, error: err }, 'Error in onError callback');
+            }
+          }
+          stopMonitoring();
+          return;
+        }
+
+        // Update last activity
+        agent.lastActivity = new Date();
+      } catch (err) {
+        logger.error({ agentId, error: err }, 'Error during monitoring poll');
+        // Don't stop on poll errors - pane might be temporarily unavailable
+      }
+    };
+
+    // Start polling
+    intervalId = setInterval(() => void poll(), pollInterval);
+
+    // Do initial poll
+    void poll();
+
+    // Track the monitor
+    const handle: MonitorHandle = {
+      stop: stopMonitoring,
+      done: donePromise,
+    };
+    this.monitors.set(agentId, { stop: stopMonitoring });
+
+    return handle;
+  }
+
+  /**
+   * Stop monitoring for a specific agent
+   */
+  stopMonitoring(agentId: AgentId): void {
+    const monitor = this.monitors.get(agentId);
+    if (monitor) {
+      monitor.stop();
+    }
+  }
+
+  /**
+   * Stop all active monitors
+   */
+  stopAllMonitors(): void {
+    for (const [agentId, monitor] of this.monitors) {
+      logger.debug({ agentId }, 'Stopping monitor');
+      monitor.stop();
+    }
+    this.monitors.clear();
+  }
+
+  /**
+   * Detect completion markers in output
+   */
+  private detectCompletion(output: string): boolean {
+    return COMPLETION_MARKERS.some(pattern => pattern.test(output));
+  }
+
+  /**
+   * Detect error markers in output
+   */
+  private detectError(output: string): boolean {
+    return ERROR_MARKERS.some(pattern => pattern.test(output));
   }
 
   /**

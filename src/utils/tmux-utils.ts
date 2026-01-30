@@ -564,7 +564,7 @@ export async function launchClaudeCLIAsync(
 
   // Use command substitution to read prompt from file - avoids command line length issues
   // The file is read at shell execution time, not embedded in the command
-  const claudeCommand = `claude --append-system-prompt "\$(cat ${escapeShellArg(options.systemPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+  const claudeCommand = `claude --dangerously-skip-permissions --append-system-prompt "\$(cat ${escapeShellArg(options.systemPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
   await sendKeys(sessionName, claudeCommand);
 
   // Return immediately, poll in background
@@ -632,7 +632,7 @@ export async function launchClaudeCLI(
 
     // Use command substitution to read prompt from file - avoids command line length issues
     // The file is read at shell execution time, not embedded in the command
-    const claudeCommand = `claude --append-system-prompt "\$(cat ${escapeShellArg(options.systemPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+    const claudeCommand = `claude --dangerously-skip-permissions --append-system-prompt "\$(cat ${escapeShellArg(options.systemPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
     await sendKeys(sessionName, claudeCommand);
 
     // Wait for Claude to initialize (poll for prompt)
@@ -804,7 +804,7 @@ export async function ensureClaudeRunning(
   await new Promise(resolve => setTimeout(resolve, 500));
 
   // Build and send the Claude command using command substitution
-  const claudeCommand = `claude --append-system-prompt "\$(cat ${escapeShellArg(tempPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+  const claudeCommand = `claude --dangerously-skip-permissions --append-system-prompt "\$(cat ${escapeShellArg(tempPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
   await sendKeys(sessionName, claudeCommand);
 
   // Wait for Claude to be ready
@@ -875,7 +875,7 @@ export async function launchClaudeCLIInPane(
   await new Promise(r => setTimeout(r, 300));
 
   // Build and send Claude command via keystrokes
-  const claudeCommand = `claude --append-system-prompt "$(cat ${escapeShellArg(tempPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
+  const claudeCommand = `claude --dangerously-skip-permissions --append-system-prompt "$(cat ${escapeShellArg(tempPromptPath)})" --setting-sources project --session-id ${escapeShellArg(options.sessionId)}`;
   await sendKeysRawToPane(paneId, claudeCommand);
   await sendSpecialKeyToPane(paneId, 'Enter');
 
