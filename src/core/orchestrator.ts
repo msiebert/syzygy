@@ -471,9 +471,9 @@ export class Orchestrator {
 
         // Wait for Claude to be ready in background, then trigger onPMReady
         handle.waitForReady()
-          .then(() => {
+          .then(async () => {
             this.splitScreen?.updateInitProgress(agent.id, 'ready', 0);
-            this.onPMReady();
+            await this.onPMReady();
           })
           .catch((error) => {
             logger.error({ error }, 'PM failed to become ready');
@@ -498,7 +498,7 @@ export class Orchestrator {
    * Called when PM Claude CLI is ready
    * @private
    */
-  private onPMReady(): void {
+  private async onPMReady(): Promise<void> {
     // Hide initialization panel
     this.splitScreen?.setInitializationComplete();
 
@@ -528,8 +528,12 @@ export class Orchestrator {
       void this.handlePMTimeout();
     }, 30 * 60 * 1000);
 
+    // Wait for Claude to fully process the system prompt before sending user prompt
+    // This prevents race conditions where both prompts arrive too quickly
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
     // Send initial prompt to PM to kick off the conversation
-    void this.sendInitialPromptToPM();
+    await this.sendInitialPromptToPM();
 
     // AgentManager auto-focuses the PM window, so it's already visible
     // Just update the UI to reflect that PM is ready

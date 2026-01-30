@@ -6,6 +6,7 @@
  * Using panes instead of windows allows multiple agents to be visible simultaneously.
  */
 
+import { unlink } from 'node:fs/promises';
 import type { AgentRole, AgentId } from '../types/agent.types.js';
 import { toAgentId } from '../types/agent.types.js';
 import { createModuleLogger } from '@utils/logger';
@@ -298,6 +299,14 @@ export class AgentManager {
     };
     this.agents.set(agentId, agent);
 
+    // Write initial prompt to temp file (avoids tmux send-keys corruption for long prompts)
+    let tempPromptPath: string | undefined;
+    if (config.initialPrompt) {
+      tempPromptPath = `/tmp/syzygy-prompt-${agentId}-${Date.now()}.txt`;
+      await Bun.write(tempPromptPath, config.initialPrompt);
+      logger.debug({ tempPromptPath }, 'Wrote initial prompt to temp file');
+    }
+
     try {
       // Give shell time to initialize
       await sleep(300);
@@ -306,9 +315,13 @@ export class AgentManager {
       await this.sendToPane(paneId, `cd ${escapeShellArg(config.workingDirectory)}`);
       await sleep(300);
 
-      // Start Claude Code
-      const claudeCommand = `claude --session-id ${escapeShellArg(sessionId)}`;
-      logger.info({ paneId, claudeCommand }, 'Starting Claude Code');
+      // Start Claude Code with initial prompt from file (avoids tmux corruption)
+      // Use $(cat file) to read prompt - bypasses tmux for long string content
+      let claudeCommand = `claude --session-id ${escapeShellArg(sessionId)}`;
+      if (tempPromptPath) {
+        claudeCommand += ` "$(cat ${escapeShellArg(tempPromptPath)})"`;
+      }
+      logger.info({ paneId, claudeCommand: claudeCommand.slice(0, 200) + '...' }, 'Starting Claude Code');
       await this.sendToPane(paneId, claudeCommand);
 
       // Create promise for readiness
@@ -323,10 +336,20 @@ export class AgentManager {
         waitForReady: async () => {
           await readyPromise;
 
-          // Send initial prompt after Claude is ready
-          logger.info({ agentId, paneId }, 'Claude ready, sending initial prompt');
-          await this.sendPromptToPane(paneId, config.initialPrompt);
+          // Clean up temp prompt file if used
+          if (tempPromptPath) {
+            try {
+              const exists = await Bun.file(tempPromptPath).exists();
+              if (exists) {
+                await unlink(tempPromptPath);
+              }
+              logger.debug({ tempPromptPath }, 'Cleaned up temp prompt file');
+            } catch {
+              // Ignore cleanup errors
+            }
+          }
 
+          logger.info({ agentId, paneId }, 'Claude ready with initial prompt');
           agent.status = 'ready';
           agent.lastActivity = new Date();
         },
@@ -338,6 +361,12 @@ export class AgentManager {
       agent.status = 'error';
       await closePane(paneId).catch(() => {});
       this.agents.delete(agentId);
+
+      // Clean up temp prompt file if created
+      if (tempPromptPath) {
+        await unlink(tempPromptPath).catch(() => {});
+      }
+
       throw error;
     }
   }
@@ -357,7 +386,10 @@ export class AgentManager {
       try {
         const content = await capturePaneById(paneId);
         if (isClaudeReady(content)) {
-          logger.info({ paneId }, 'Claude is ready');
+          logger.info({ paneId }, 'Claude is ready, waiting for settling delay');
+          // Settling delay: allow Claude to fully initialize before sending prompts
+          await sleep(500);
+          logger.info({ paneId }, 'Settling delay complete, Claude ready for prompts');
           return;
         }
       } catch {
@@ -385,9 +417,12 @@ export class AgentManager {
     // For long prompts, split into chunks to avoid shell line limits
     const maxChunkSize = 4000;
 
+    logger.debug({ paneId, promptLength: prompt.length }, 'Sending prompt to pane');
+
     if (prompt.length <= maxChunkSize) {
       // Short prompt - send directly
       await sendKeysRawToPane(paneId, prompt);
+      logger.debug({ paneId }, 'Prompt text sent, sending Enter key');
       await sendSpecialKeyToPane(paneId, 'Enter');
     } else {
       // Long prompt - send in chunks
@@ -396,8 +431,13 @@ export class AgentManager {
         await sendKeysRawToPane(paneId, chunk);
         await sleep(50); // Small delay between chunks
       }
+      logger.debug({ paneId }, 'All chunks sent, sending Enter key');
       await sendSpecialKeyToPane(paneId, 'Enter');
     }
+
+    // Brief delay to ensure Claude receives the prompt before any subsequent operations
+    await sleep(100);
+    logger.debug({ paneId }, 'Prompt delivery complete');
   }
 
   /**
