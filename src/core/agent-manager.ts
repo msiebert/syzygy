@@ -45,18 +45,6 @@ function escapeRegExp(str: string): string {
 }
 
 /**
- * Regex pattern to detect completion marker at the start of a line.
- * Only matches when the marker appears at line start (with optional leading whitespace),
- * not when it's embedded in other text (like instruction echoes).
- */
-const COMPLETION_PATTERN = new RegExp(`^\\s*${escapeRegExp(COMPLETION_MARKER)}`, 'm');
-
-/**
- * Regex pattern to detect error marker at the start of a line.
- */
-const ERROR_PATTERN = new RegExp(`^\\s*${escapeRegExp(ERROR_MARKER)}`, 'm');
-
-/**
  * Status of an agent in its lifecycle
  */
 export type AgentStatus =
@@ -827,22 +815,48 @@ export class AgentManager {
   /**
    * Detect completion marker in output.
    *
-   * Only detect the marker when it appears at the START of a line,
-   * not when it's embedded in other text (like instruction echoes).
-   * This prevents false detection of markers in echoed prompts like:
-   * "Output the exact text: [SYZYGY:COMPLETE]"
+   * Requirements:
+   * 1. Marker must be alone on a line (with optional whitespace)
+   * 2. Only whitespace/blank lines can follow the marker
+   *
+   * This prevents false detection when Claude explains what it will output,
+   * e.g., "I'll output: [SYZYGY:COMPLETE] when done" - text follows the marker.
+   * When Claude actually completes, the marker is at the end of the output.
    */
   private detectCompletion(output: string): boolean {
-    return COMPLETION_PATTERN.test(output);
+    const markerPattern = new RegExp(
+      `^\\s*${escapeRegExp(COMPLETION_MARKER)}\\s*$`,
+      'm'
+    );
+
+    const match = output.match(markerPattern);
+    if (!match || match.index === undefined) {
+      return false;
+    }
+
+    // Only whitespace allowed after the marker
+    const afterMarker = output.slice(match.index + match[0].length);
+    return /^\s*$/.test(afterMarker);
   }
 
   /**
    * Detect error marker in output.
    *
-   * Only detect the marker when it appears at the START of a line.
+   * Same logic as completion: marker must be at the end of content.
    */
   private detectError(output: string): boolean {
-    return ERROR_PATTERN.test(output);
+    const markerPattern = new RegExp(
+      `^\\s*${escapeRegExp(ERROR_MARKER)}\\s*$`,
+      'm'
+    );
+
+    const match = output.match(markerPattern);
+    if (!match || match.index === undefined) {
+      return false;
+    }
+
+    const afterMarker = output.slice(match.index + match[0].length);
+    return /^\s*$/.test(afterMarker);
   }
 
   /**

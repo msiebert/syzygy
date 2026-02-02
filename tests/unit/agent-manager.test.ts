@@ -452,7 +452,8 @@ describe('AgentManager', () => {
             result = 'Claude Code\n>';
           } else if (callCount >= 5) {
             // Content grows: baseline + new content with completion marker
-            result = 'Claude Code\n>Work done!\n\n[SYZYGY:COMPLETE]';
+            // Marker must be at the END (only whitespace follows) for detection
+            result = 'Claude Code\n>Work done!\n\n[SYZYGY:COMPLETE]\n';
           }
         }
 
@@ -517,7 +518,8 @@ describe('AgentManager', () => {
             result = 'Claude Code\n>';
           } else if (callCount >= 5) {
             // Content grows: baseline + new content with error marker
-            result = 'Claude Code\n>Something went wrong\n\n[SYZYGY:ERROR]';
+            // Marker must be at the END (only whitespace follows) for detection
+            result = 'Claude Code\n>Something went wrong\n\n[SYZYGY:ERROR]\n';
           }
         }
 
