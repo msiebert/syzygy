@@ -332,9 +332,11 @@ export async function capturePane(sessionName: SessionName): Promise<string> {
 
 /**
  * Capture pane content by pane ID (not session name)
+ * @param paneId - The pane ID to capture
+ * @param historyLines - Number of lines from scrollback to capture (default: 500 for monitoring reliability)
  */
-export async function capturePaneById(paneId: PaneId): Promise<string> {
-  logger.debug({ paneId }, 'Capturing pane content by ID');
+export async function capturePaneById(paneId: PaneId, historyLines = 500): Promise<string> {
+  logger.debug({ paneId, historyLines }, 'Capturing pane content by ID');
 
   try {
     const output = await execTmux([
@@ -342,7 +344,7 @@ export async function capturePaneById(paneId: PaneId): Promise<string> {
       '-t', paneId,
       '-p', // print to stdout
       '-J', // join wrapped lines
-      '-S', '-50', // last 50 lines only
+      '-S', `-${historyLines}`, // Capture more history to prevent baseline drift
     ]);
     logger.debug({ paneId, lines: output.split('\n').length }, 'Pane captured');
     return output;

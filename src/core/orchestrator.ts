@@ -5,6 +5,7 @@
 
 import type { WorkflowState, WorkflowEvent, ResumeResult } from '../types/workflow.types.js';
 import type { Agent, AgentRole } from '../types/agent.types.js';
+import type { StageName } from '../types/stage.types.js';
 import { toAgentId } from '../types/agent.types.js';
 import { SessionManager } from './session-manager.js';
 import { WorkflowEngine } from './workflow-engine.js';
@@ -15,6 +16,7 @@ import { ResumeDetector } from './resume-detector.js';
 import { PMMonitor } from './pm-monitor.js';
 import { SplitScreenController } from '../cli/split-screen.js';
 import { AgentManager, type MonitorHandle } from './agent-manager.js';
+import { AgentCompletionTracker, type CompletionEvent } from './agent-completion-tracker.js';
 import {
   getAlwaysRunningAgents,
   getSessionName,
@@ -49,6 +51,7 @@ export class Orchestrator {
   private lockManager: LockManager;
   private resumeDetector: ResumeDetector;
   private agentManager: AgentManager;
+  private completionTracker: AgentCompletionTracker;
   private agents: Map<string, Agent> = new Map();
   private activeMonitors: Map<string, MonitorHandle> = new Map();
   private isRunning = false;
@@ -72,7 +75,9 @@ export class Orchestrator {
     this.agentManager = new AgentManager({
       readyTimeoutMs: 60000, // 60s timeout for Claude to become ready
       cleanupOnExit: true,
+      keepCompletedPanes: true, // Keep panes open for debugging
     });
+    this.completionTracker = new AgentCompletionTracker();
 
     logger.info({ config: this.config }, 'Orchestrator initialized');
   }
@@ -576,6 +581,12 @@ export class Orchestrator {
       const payload = event.payload as { artifactPath: string; stageName: string };
       const { artifactPath, stageName } = payload;
 
+      // Check if this file creation signals an agent's completion
+      const completion = this.completionTracker.checkFileCreated(artifactPath, stageName as StageName);
+      if (completion) {
+        await this.handleAgentCompleted(completion);
+      }
+
       // Determine next agent based on stage
       const nextAgentInfo = this.determineNextAgent(stageName);
 
@@ -653,6 +664,9 @@ export class Orchestrator {
       case 'arch':
         return { role: 'test-engineer' };
       case 'tasks':
+        // Task files are created by Architect as OUTPUT, not as triggers for developers
+        // Developers are triggered by test file creation (see 'tests' case)
+        return null;
       case 'tests':
         return { role: 'developer', instance: 1 }; // TODO: Load balance across multiple developers
       case 'impl':
@@ -787,18 +801,23 @@ export class Orchestrator {
     }
     this.agents.set(agentId, agent);
 
-    // Start monitoring agent for completion/errors
-    this.monitorAgentWork(agentId);
+    // Register expected output with completion tracker
+    // File-based detection will signal completion when output files appear
+    this.completionTracker.registerWork(typedAgentId, agent.role, context);
+
+    // Start monitoring agent for errors/timeouts only (not completion)
+    // Completion is detected via file creation in handleArtifactCreated
+    this.monitorAgentForErrors(agentId);
 
     logger.info({ agentId, role: agent.role }, 'Instruction sent to agent');
   }
 
   /**
-   * Monitor agent work progress
-   * Uses AgentManager to poll for completion/error markers and auto-close panes
+   * Monitor agent for errors and timeouts only
+   * Completion is detected via file creation (file-based detection)
    * @private
    */
-  private monitorAgentWork(agentId: string): void {
+  private monitorAgentForErrors(agentId: string): void {
     const agent = this.agents.get(agentId);
     if (!agent) {
       return;
@@ -813,16 +832,11 @@ export class Orchestrator {
       this.activeMonitors.delete(agentId);
     }
 
-    // Start monitoring via AgentManager
+    // Start monitoring via AgentManager for errors/timeouts only
+    // Note: onComplete is not used since completion is detected via file creation
     const handle = this.agentManager.startMonitoring(typedAgentId, {
       pollInterval: this.config.pollInterval,
       timeout: 30 * 60 * 1000, // 30 minutes timeout
-      onComplete: () => {
-        logger.info({ agentId }, 'Agent completed work (via monitor)');
-        agent.status = 'complete';
-        this.agents.set(agentId, agent);
-        this.activeMonitors.delete(agentId);
-      },
       onError: (error) => {
         logger.warn({ agentId, error: error.message }, 'Agent error detected (via monitor)');
         agent.status = 'error';
@@ -834,7 +848,7 @@ export class Orchestrator {
 
     // Track the monitor
     this.activeMonitors.set(agentId, handle);
-    logger.info({ agentId }, 'Started monitoring agent work');
+    logger.info({ agentId }, 'Started monitoring agent for errors');
   }
 
   /**
@@ -850,6 +864,9 @@ export class Orchestrator {
       this.agents.set(agentId, agent);
     }
 
+    // Cancel completion tracking for this agent
+    this.completionTracker.cancelWork(toAgentId(agentId));
+
     // Transition workflow to error state
     if (this.workflowEngine) {
       this.workflowEngine.transitionToError(
@@ -858,6 +875,42 @@ export class Orchestrator {
         this.workflowEngine.getCurrentState()
       );
     }
+  }
+
+  /**
+   * Handle agent completion detected via file creation
+   * @private
+   */
+  private async handleAgentCompleted(completion: CompletionEvent): Promise<void> {
+    const { agentId, role, artifactPath, stageName } = completion;
+
+    logger.info(
+      { agentId, role, artifactPath, stageName },
+      'Agent completed work (file-based detection)'
+    );
+
+    // Stop any terminal-based monitoring for this agent
+    const existingMonitor = this.activeMonitors.get(agentId);
+    if (existingMonitor) {
+      existingMonitor.stop();
+      this.activeMonitors.delete(agentId);
+    }
+
+    // Update local agent status
+    const agent = this.agents.get(agentId);
+    if (agent) {
+      agent.status = 'complete';
+      agent.currentTask = undefined;
+      this.agents.set(agentId, agent);
+    }
+
+    // Mark completed in AgentManager (may close pane depending on config)
+    this.agentManager.markCompleted(toAgentId(agentId));
+
+    // Update UI with new agent statuses
+    this.splitScreen?.updateAgents(Array.from(this.agents.values()));
+
+    logger.info({ agentId, role }, 'Agent completion handled successfully');
   }
 
   /**
@@ -952,6 +1005,9 @@ export class Orchestrator {
 
       // Clear local agents map
       this.agents.clear();
+
+      // Clear completion tracker
+      this.completionTracker.clear();
 
       logger.info('Cleanup complete');
     } catch (error) {

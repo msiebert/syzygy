@@ -26,14 +26,12 @@ export type { PaneId } from '@utils/tmux-utils';
 const logger = createModuleLogger('agent-manager');
 
 /**
- * Explicit completion marker that agents output when done.
- * This is a unique string that won't appear in normal conversation.
- */
-const COMPLETION_MARKER = '[SYZYGY:COMPLETE]';
-
-/**
  * Explicit error marker that agents output when they encounter an unrecoverable error.
  * This is a unique string that won't appear in normal conversation.
+ *
+ * NOTE: Completion is now detected via file creation (file-based detection) in the
+ * Orchestrator. Error markers are still used as a fallback for agents that fail
+ * before creating their output files.
  */
 const ERROR_MARKER = '[SYZYGY:ERROR]';
 
@@ -360,10 +358,11 @@ export class AgentManager {
       await sleep(300);
 
       // Start Claude Code with initial prompt from file (avoids tmux corruption)
-      // Use $(cat file) to read prompt - bypasses tmux for long string content
+      // Use --append-system-prompt to keep Claude in interactive mode
+      // Passing prompt as positional argument causes Claude to run in non-interactive mode and exit
       let claudeCommand = `claude --dangerously-skip-permissions --session-id ${escapeShellArg(sessionId)}`;
       if (tempPromptPath) {
-        claudeCommand += ` "$(cat ${escapeShellArg(tempPromptPath)})"`;
+        claudeCommand += ` --append-system-prompt "$(cat ${escapeShellArg(tempPromptPath)})"`;
       }
       logger.info({ paneId, claudeCommand: claudeCommand.slice(0, 200) + '...' }, 'Starting Claude Code');
       await this.sendToPane(paneId, claudeCommand);
@@ -396,6 +395,13 @@ export class AgentManager {
           logger.info({ agentId, paneId }, 'Claude ready with initial prompt');
           agent.status = 'ready';
           agent.lastActivity = new Date();
+
+          // Send initial user message to trigger Claude to start working
+          // With --append-system-prompt, Claude has instructions but waits for user input
+          await sendKeysRawToPane(paneId, 'Begin your assigned task now.');
+          await sendSpecialKeyToPane(paneId, 'Enter');
+          agent.status = 'working';
+          logger.info({ agentId, paneId }, 'Sent initial user message to start agent work');
         },
       };
 
@@ -655,12 +661,15 @@ export class AgentManager {
   }
 
   /**
-   * Start monitoring an agent for completion or errors
+   * Start monitoring an agent for errors and timeouts
    * Returns a handle to stop monitoring and a promise that resolves when monitoring ends
    *
-   * Uses baseline-based detection: captures the pane content length when monitoring starts,
-   * and only detects markers in NEW content after that baseline. This prevents false detection
-   * of markers that appear in the echoed prompt/instructions.
+   * NOTE: Completion detection is now handled via file-based detection in the Orchestrator.
+   * This method only monitors for errors and timeouts as a fallback for agents that fail
+   * before creating their output files.
+   *
+   * Uses baseline-based detection: captures the pane content when monitoring starts,
+   * and only detects error markers in NEW content after that baseline.
    */
   startMonitoring(agentId: AgentId, options: MonitorOptions = {}): MonitorHandle {
     const agent = this.agents.get(agentId);
@@ -677,10 +686,17 @@ export class AgentManager {
     let intervalId: Timer | undefined;
     const startTime = Date.now();
 
-    // Baseline content length when monitoring starts.
-    // Markers in content before this point are ignored (they're from the echoed prompt).
-    let baselineLength = 0;
+    // Baseline content when monitoring starts.
+    // We store the actual content to detect when pane content changes significantly
+    // (e.g., due to scrollback limit causing earlier content to be lost).
+    let baselineContent = '';
     let baselineCaptured = false;
+
+    // Number of polls to skip after baseline before checking for markers.
+    // This allows Claude's initial acknowledgment/planning output to settle.
+    // Increased to 10 (10 seconds at 1000ms poll interval) to give Claude time to start processing.
+    const SETTLING_POLLS = 10;
+    let pollsSinceBaseline = 0;
 
     // Create a promise that resolves when monitoring ends
     let resolvePromise: () => void;
@@ -706,32 +722,46 @@ export class AgentManager {
       try {
         const content = await capturePaneById(agent.paneId);
 
-        // On first poll, capture baseline length (prompt echo is already in pane)
+        // On first poll, capture baseline content (prompt echo is already in pane)
         if (!baselineCaptured) {
-          baselineLength = content.length;
+          baselineContent = content;
           baselineCaptured = true;
-          logger.debug({ agentId, baselineLength }, 'Captured monitoring baseline');
+          logger.debug({ agentId, baselineLength: content.length }, 'Captured monitoring baseline');
           // Skip detection on first poll - baseline just established
           return;
         }
 
-        // Only check content AFTER the baseline for markers
-        const newContent = content.slice(baselineLength);
+        pollsSinceBaseline++;
 
-        // Check for completion in new content only
-        if (this.detectCompletion(newContent)) {
-          logger.info({ agentId }, 'Agent completed successfully');
-          this.markCompleted(agentId);
-          if (options.onComplete) {
-            try {
-              options.onComplete();
-            } catch (err) {
-              logger.error({ agentId, error: err }, 'Error in onComplete callback');
-            }
-          }
-          stopMonitoring();
+        // Skip marker detection during settling period to let Claude's
+        // initial acknowledgment/planning output complete
+        if (pollsSinceBaseline <= SETTLING_POLLS) {
+          logger.debug({ agentId, pollsSinceBaseline, SETTLING_POLLS }, 'In settling period, skipping marker detection');
           return;
         }
+
+        // Find new content by checking if current content starts with baseline.
+        // If pane content has scrolled significantly, fall back to checking full content
+        // but require the marker to be truly at the end.
+        let newContent: string;
+        if (content.startsWith(baselineContent)) {
+          // Content is consistent - slice off baseline
+          newContent = content.slice(baselineContent.length);
+        } else if (content.length > baselineContent.length) {
+          // Baseline drift detected - scrollback limit caused early content to be lost.
+          // We can't reliably determine which content is new, so skip marker detection
+          // this poll. The marker will be detected on subsequent polls once content settles.
+          logger.debug({ agentId }, 'Baseline drift detected, skipping marker detection this poll');
+          return;
+        } else {
+          // Content is shorter or completely different - skip this poll
+          logger.debug({ agentId, contentLen: content.length, baselineLen: baselineContent.length }, 'Content shorter than baseline, skipping');
+          return;
+        }
+
+        // NOTE: Completion detection removed - now handled via file-based detection
+        // in the Orchestrator. When agents create their output files, the FileMonitor
+        // triggers handleArtifactCreated which checks the AgentCompletionTracker.
 
         // Check for errors in new content only
         if (this.detectError(newContent)) {
@@ -813,19 +843,18 @@ export class AgentManager {
   }
 
   /**
-   * Detect completion marker in output.
+   * Detect error marker in output.
    *
-   * Requirements:
-   * 1. Marker must be alone on a line (with optional whitespace)
-   * 2. Only whitespace/blank lines can follow the marker
-   *
-   * This prevents false detection when Claude explains what it will output,
-   * e.g., "I'll output: [SYZYGY:COMPLETE] when done" - text follows the marker.
-   * When Claude actually completes, the marker is at the end of the output.
+   * Same logic as completion: marker must be at the end of content,
+   * with meaningful content before it.
    */
-  private detectCompletion(output: string): boolean {
+  private detectError(output: string): boolean {
+    // Require minimum content length before considering error.
+    // This prevents false detection when Claude mentions the marker early.
+    const MIN_CONTENT_BEFORE_MARKER = 50; // Lower threshold for errors
+
     const markerPattern = new RegExp(
-      `^\\s*${escapeRegExp(COMPLETION_MARKER)}\\s*$`,
+      `^\\s*${escapeRegExp(ERROR_MARKER)}\\s*$`,
       'm'
     );
 
@@ -834,24 +863,10 @@ export class AgentManager {
       return false;
     }
 
-    // Only whitespace allowed after the marker
-    const afterMarker = output.slice(match.index + match[0].length);
-    return /^\s*$/.test(afterMarker);
-  }
-
-  /**
-   * Detect error marker in output.
-   *
-   * Same logic as completion: marker must be at the end of content.
-   */
-  private detectError(output: string): boolean {
-    const markerPattern = new RegExp(
-      `^\\s*${escapeRegExp(ERROR_MARKER)}\\s*$`,
-      'm'
-    );
-
-    const match = output.match(markerPattern);
-    if (!match || match.index === undefined) {
+    // Check that there's meaningful content before the marker
+    const beforeMarker = output.slice(0, match.index);
+    const meaningfulContent = beforeMarker.replace(/\s+/g, '').length;
+    if (meaningfulContent < MIN_CONTENT_BEFORE_MARKER) {
       return false;
     }
 

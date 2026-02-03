@@ -136,12 +136,11 @@ priority: normal
 
 Once the user approves your spec, the Architect will begin designing the implementation.
 
-## Signaling Completion
+## Completion
 
-When you have fully completed your assigned task (spec is written and user has approved):
-1. Output the exact text: [SYZYGY:COMPLETE]
-2. This signals to Syzygy that your work is finished
-3. Do NOT output this until you are truly done
+When you have finished your work and the user approves the spec:
+1. Save the spec file to .syzygy/stages/spec/pending/
+2. The orchestrator will automatically detect your completion when the spec file appears
 
 ## Signaling Errors
 
@@ -184,9 +183,55 @@ ${specPath || `.syzygy/stages/spec/done/${featureSlug}-spec.md`}
 4. Document architectural decisions
 5. Specify task dependencies
 
-## Output Files
+## Output Files - IMPORTANT ORDERING
 
-### 1. Architecture Document
+**CRITICAL: You must write files in this exact order. The orchestrator detects your completion
+when the architecture document appears, so task files MUST be written before it.**
+
+### 1. Task Files FIRST (one per independent task)
+Write ALL task files before the architecture document:
+\`\`\`
+.syzygy/stages/tasks/pending/${featureSlug}-task-1.md
+.syzygy/stages/tasks/pending/${featureSlug}-task-2.md
+...
+\`\`\`
+
+Format for each task:
+\`\`\`markdown
+---
+type: task
+from: architect
+to: developer
+status: pending
+featureName: ${featureName}
+taskId: task-1
+priority: normal
+dependencies: []  # Other task IDs this depends on
+---
+
+# Task 1: [Task Title]
+
+## Description
+[What needs to be implemented]
+
+## Files to Modify/Create
+- src/path/to/file1.ts
+- src/path/to/file2.ts
+
+## Implementation Details
+[Specific implementation guidance]
+
+## Success Criteria
+- [ ] Criterion 1
+- [ ] Tests pass
+
+## Reference Documents
+- Spec: ${specPath || `.syzygy/stages/spec/done/${featureSlug}-spec.md`}
+- Architecture: .syzygy/stages/arch/done/${featureSlug}-architecture.md
+\`\`\`
+
+### 2. Architecture Document LAST
+Only after ALL task files are saved, write the architecture document:
 \`\`\`
 .syzygy/stages/arch/pending/${featureSlug}-architecture.md
 \`\`\`
@@ -228,47 +273,6 @@ featureName: ${featureName}
 - src/module2/
 \`\`\`
 
-### 2. Task Files (one per independent task)
-\`\`\`
-.syzygy/stages/tasks/pending/${featureSlug}-task-1.md
-.syzygy/stages/tasks/pending/${featureSlug}-task-2.md
-...
-\`\`\`
-
-Format for each task:
-\`\`\`markdown
----
-type: task
-from: architect
-to: developer
-status: pending
-featureName: ${featureName}
-taskId: task-1
-priority: normal
-dependencies: []  # Other task IDs this depends on
----
-
-# Task 1: [Task Title]
-
-## Description
-[What needs to be implemented]
-
-## Files to Modify/Create
-- src/path/to/file1.ts
-- src/path/to/file2.ts
-
-## Implementation Details
-[Specific implementation guidance]
-
-## Success Criteria
-- [ ] Criterion 1
-- [ ] Tests pass
-
-## Reference Documents
-- Spec: ${specPath || `.syzygy/stages/spec/done/${featureSlug}-spec.md`}
-- Architecture: .syzygy/stages/arch/done/${featureSlug}-architecture.md
-\`\`\`
-
 ## Success Criteria
 
 - Architecture is complete and coherent
@@ -278,12 +282,15 @@ dependencies: []  # Other task IDs this depends on
 
 The Test Engineer will use your architecture to create test cases.
 
-## Signaling Completion
+## Completion
 
-When you have fully completed your assigned task (architecture doc and all task files created):
-1. Output the exact text: [SYZYGY:COMPLETE]
-2. This signals to Syzygy that your work is finished
-3. Do NOT output this until you are truly done
+When you have finished your work:
+1. First, ensure ALL task files are saved to .syzygy/stages/tasks/pending/
+2. Then, save the architecture document to .syzygy/stages/arch/pending/
+3. The orchestrator will automatically detect your completion when the architecture.md file appears
+
+This file ordering is critical - the architecture document is your "I'm done" signal,
+so all task files must exist before you write it.
 
 ## Signaling Errors
 
@@ -390,12 +397,11 @@ describe('${featureName}', () => {
 
 Developers will implement code to make these tests pass.
 
-## Signaling Completion
+## Completion
 
-When you have fully completed your assigned task (test file created):
-1. Output the exact text: [SYZYGY:COMPLETE]
-2. This signals to Syzygy that your work is finished
-3. Do NOT output this until you are truly done
+When you have finished your work:
+1. Save the test file to .syzygy/stages/tests/pending/
+2. The orchestrator will automatically detect your completion when the test file appears
 
 ## Signaling Errors
 
@@ -508,12 +514,12 @@ mv ${taskPath || `.syzygy/stages/tasks/pending/${featureSlug}-${taskId}.md`} .sy
 
 The Code Reviewer will review your implementation.
 
-## Signaling Completion
+## Completion
 
-When you have fully completed your assigned task (all tests pass and implementation summary written):
-1. Output the exact text: [SYZYGY:COMPLETE]
-2. This signals to Syzygy that your work is finished
-3. Do NOT output this until you are truly done
+When you have finished your work:
+1. Ensure all tests pass
+2. Save the implementation summary to .syzygy/stages/impl/pending/
+3. The orchestrator will automatically detect your completion when the implementation file appears
 
 ## Signaling Errors
 
@@ -644,12 +650,13 @@ priority: high
 
 If approved, the Documenter will update project docs. If fixes requested, a Developer will address them.
 
-## Signaling Completion
+## Completion
 
-When you have fully completed your assigned task (review complete - either approved or fixes requested):
-1. Output the exact text: [SYZYGY:COMPLETE]
-2. This signals to Syzygy that your work is finished
-3. Do NOT output this until you are truly done
+When you have finished your review:
+- If APPROVING: Save the review file to .syzygy/stages/review/pending/
+- If REQUESTING CHANGES: Save the fixes file to .syzygy/stages/tasks/pending/
+
+The orchestrator will automatically detect your completion when either file appears.
 
 ## Signaling Errors
 
@@ -746,12 +753,12 @@ featureName: ${featureName}
 
 Once complete, the workflow is finished and Syzygy will notify the user!
 
-## Signaling Completion
+## Completion
 
-When you have fully completed your assigned task (all documentation updated):
-1. Output the exact text: [SYZYGY:COMPLETE]
-2. This signals to Syzygy that your work is finished
-3. Do NOT output this until you are truly done
+When you have finished your work:
+1. Update all relevant documentation files in the project
+2. Save the documentation summary to .syzygy/stages/docs/pending/
+3. The orchestrator will automatically detect your completion when the documentation file appears
 
 ## Signaling Errors
 

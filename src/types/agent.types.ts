@@ -37,8 +37,8 @@ export interface Agent {
   role: AgentRole;         // Agent's specialized role
   sessionName: SessionName; // Tmux session name
   status: AgentStatus;     // Current status
-  currentTask?: string;    // Path to task file being processed
-  paneId?: PaneId;         // Pane ID when using pane-based approach (inside tmux)
+  currentTask?: string | undefined;    // Path to task file being processed
+  paneId?: PaneId | undefined;         // Pane ID when using pane-based approach (inside tmux)
 }
 
 export interface AgentConfig {

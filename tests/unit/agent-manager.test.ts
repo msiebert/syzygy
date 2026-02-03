@@ -190,12 +190,15 @@ describe('AgentManager', () => {
       expect(agents[0]?.status).toBe('starting');
     });
 
-    it('should update status to ready after waitForReady', async () => {
+    it('should update status to working after waitForReady (sends initial user message)', async () => {
       const handle = await manager.startAgent(testConfig);
       await handle.waitForReady();
 
       const status = manager.getStatus(handle.id);
-      expect(status).toBe('ready');
+      // With --append-system-prompt, Claude has instructions but waits for user input.
+      // waitForReady now sends "Begin your assigned task now." to trigger Claude,
+      // so status transitions from ready -> working.
+      expect(status).toBe('working');
     });
   });
 
@@ -424,71 +427,9 @@ describe('AgentManager', () => {
       monitorHandle.stop();
     });
 
-    it('should detect completion and call markCompleted', async () => {
-      // Create manager with keepCompletedPanes: true so we can check status
-      const managerWithKeepPanes = new AgentManager({
-        readyTimeoutMs: 5000,
-        cleanupOnExit: false,
-        keepCompletedPanes: true,
-      });
-
-      // Setup mock to return completion marker in NEW content after baseline
-      // The baseline-based detection requires the marker to appear in content
-      // that grows AFTER the first monitoring poll captures the baseline.
-      let callCount = 0;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      (Bun as any).spawn = (cmd: string[]) => {
-        const args = cmd.slice(1);
-        execTmuxCallLog.push(args);
-
-        let result = '';
-        if (args[0] === 'split-window') {
-          paneIdCounter++;
-          result = `%${paneIdCounter}`;
-        } else if (args[0] === 'capture-pane') {
-          callCount++;
-          if (callCount >= 2 && callCount < 5) {
-            // Ready state - this content becomes the baseline
-            result = 'Claude Code\n>';
-          } else if (callCount >= 5) {
-            // Content grows: baseline + new content with completion marker
-            // Marker must be at the END (only whitespace follows) for detection
-            result = 'Claude Code\n>Work done!\n\n[SYZYGY:COMPLETE]\n';
-          }
-        }
-
-        return {
-          stdout: new ReadableStream({
-            start(c) {
-              c.enqueue(new TextEncoder().encode(result));
-              c.close();
-            },
-          }),
-          stderr: new ReadableStream({ start(c) { c.close(); } }),
-          exited: Promise.resolve(0),
-        };
-      };
-
-      const handle = await managerWithKeepPanes.startAgent(testConfig);
-      await handle.waitForReady();
-
-      let onCompleteCalled = false;
-      const monitorHandle = managerWithKeepPanes.startMonitoring(handle.id, {
-        pollInterval: 50,
-        onComplete: () => {
-          onCompleteCalled = true;
-        },
-      });
-
-      // Wait for completion detection (needs time for baseline + detection polls)
-      await new Promise(r => setTimeout(r, 300));
-
-      expect(onCompleteCalled).toBe(true);
-      expect(managerWithKeepPanes.getStatus(handle.id)).toBe('completed');
-
-      monitorHandle.stop();
-      setupMocks();
-    });
+    // NOTE: Completion detection is now handled by file-based detection in the Orchestrator
+    // via AgentCompletionTracker. The AgentManager.startMonitoring only handles errors/timeouts.
+    // See tests/unit/agent-completion-tracker.test.ts for completion detection tests.
 
     it('should detect errors and keep pane open', async () => {
       // Create manager with keepCompletedPanes: true so we can verify agent is still tracked
@@ -501,6 +442,9 @@ describe('AgentManager', () => {
       // Setup mock to return error marker in NEW content after baseline
       // The baseline-based detection requires the marker to appear in content
       // that grows AFTER the first monitoring poll captures the baseline.
+      // Detection also requires:
+      // - 3 settling polls after baseline before checking for markers
+      // - At least 50 chars of meaningful content before the error marker
       let callCount = 0;
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       (Bun as any).spawn = (cmd: string[]) => {
@@ -513,13 +457,15 @@ describe('AgentManager', () => {
           result = `%${paneIdCounter}`;
         } else if (args[0] === 'capture-pane') {
           callCount++;
-          if (callCount >= 2 && callCount < 5) {
+          if (callCount >= 2 && callCount < 8) {
             // Ready state - this content becomes the baseline
             result = 'Claude Code\n>';
-          } else if (callCount >= 5) {
+          } else if (callCount >= 8) {
             // Content grows: baseline + new content with error marker
             // Marker must be at the END (only whitespace follows) for detection
-            result = 'Claude Code\n>Something went wrong\n\n[SYZYGY:ERROR]\n';
+            // Include enough content to meet the 50 char minimum for errors
+            const errorContent = 'I encountered an unrecoverable error while processing the task. Cannot continue.';
+            result = 'Claude Code\n>' + errorContent + '\n\n[SYZYGY:ERROR]\n';
           }
         }
 
@@ -546,8 +492,9 @@ describe('AgentManager', () => {
         },
       });
 
-      // Wait for error detection (needs time for baseline + detection polls)
-      await new Promise(r => setTimeout(r, 300));
+      // Wait for error detection (needs time for baseline + settling polls + detection)
+      // With 50ms poll interval: need ~8 polls = 400ms, add buffer for safety
+      await new Promise(r => setTimeout(r, 600));
 
       expect(onErrorCalled).toBe(true);
       expect(managerWithKeepPanes.getStatus(handle.id)).toBe('error');
